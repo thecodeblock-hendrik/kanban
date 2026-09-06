@@ -15,30 +15,71 @@ import { KanbanColumn } from "@/components/KanbanColumn";
 import { KanbanCardPreview } from "@/components/KanbanCardPreview";
 import { createId, initialData, moveCard, type BoardData } from "@/lib/kanban";
 
-const STORAGE_KEY = "kanban-board-state";
-
-const readSavedBoard = (): BoardData => {
-  if (typeof window === "undefined") {
-    return initialData;
-  }
-
-  try {
-    const saved = window.localStorage.getItem(STORAGE_KEY);
-    return saved ? (JSON.parse(saved) as BoardData) : initialData;
-  } catch {
-    return initialData;
-  }
+type KanbanBoardProps = {
+  username?: string;
 };
 
-export const KanbanBoard = () => {
-  const [board, setBoard] = useState<BoardData>(() => readSavedBoard());
+export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
+  const [board, setBoard] = useState<BoardData>(initialData);
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [error, setError] = useState("");
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(board));
+    let isCurrent = true;
+
+    const loadBoard = async () => {
+      try {
+        const response = await fetch(`/api/board?user=${encodeURIComponent(username)}`);
+        if (!response.ok) {
+          throw new Error("Unable to load the board.");
+        }
+
+        const data = (await response.json()) as { board: BoardData };
+        if (isCurrent) {
+          setBoard(data.board);
+          setIsLoaded(true);
+          setError("");
+        }
+      } catch {
+        if (isCurrent) {
+          setIsLoaded(true);
+          setError("Unable to load the board from the server.");
+        }
+      }
+    };
+
+    setIsLoaded(false);
+    void loadBoard();
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [username]);
+
+  useEffect(() => {
+    if (!isLoaded) {
+      return;
     }
-  }, [board]);
+
+    const saveBoard = async () => {
+      try {
+        const response = await fetch(`/api/board?user=${encodeURIComponent(username)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(board),
+        });
+        if (!response.ok) {
+          throw new Error("Unable to save the board.");
+        }
+        setError("");
+      } catch {
+        setError("Unable to save the board to the server.");
+      }
+    };
+
+    void saveBoard();
+  }, [board, isLoaded, username]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -141,6 +182,7 @@ export const KanbanBoard = () => {
               </p>
             </div>
           </div>
+          {error ? <p className="text-sm font-medium text-red-600">{error}</p> : null}
           <div className="flex flex-wrap items-center gap-4">
             {board.columns.map((column) => (
               <div

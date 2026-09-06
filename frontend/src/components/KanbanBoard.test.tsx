@@ -1,22 +1,65 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Home from "@/app/page";
 import { KanbanBoard } from "@/components/KanbanBoard";
+import { initialData, type BoardData } from "@/lib/kanban";
 
 const getFirstColumn = () => screen.getAllByTestId(/column-/i)[0];
 
+let serverBoard: BoardData;
+
 beforeEach(() => {
+  serverBoard = structuredClone(initialData);
   window.localStorage.clear();
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+    if (init?.method === "PUT") {
+      serverBoard = JSON.parse(String(init.body)) as BoardData;
+    }
+
+    return new Response(JSON.stringify({ user: "user", board: structuredClone(serverBoard) }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("KanbanBoard", () => {
-  it("renders five columns", () => {
+  it("loads the board from the API", async () => {
+    serverBoard.columns[0].title = "API Backlog";
+
+    render(<KanbanBoard username="user" />);
+
+    expect(await screen.findByDisplayValue("API Backlog")).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith("/api/board?user=user");
+  });
+
+  it("saves a board change through the API", async () => {
+    render(<KanbanBoard username="user" />);
+    await screen.findByDisplayValue("Backlog");
+    const input = within(getFirstColumn()).getByLabelText("Column title");
+
+    await userEvent.clear(input);
+    await userEvent.type(input, "Saved Backlog");
+
+    await waitFor(() => {
+      expect(serverBoard.columns[0].title).toBe("Saved Backlog");
+    });
+  });
+
+  it("renders five columns", async () => {
     render(<KanbanBoard />);
+    await screen.findByDisplayValue("Backlog");
     expect(screen.getAllByTestId(/column-/i)).toHaveLength(5);
   });
 
   it("renames a column", async () => {
     render(<KanbanBoard />);
+    await screen.findByDisplayValue("Backlog");
     const column = getFirstColumn();
     const input = within(column).getByLabelText("Column title");
     await userEvent.clear(input);
@@ -26,6 +69,7 @@ describe("KanbanBoard", () => {
 
   it("adds and removes a card", async () => {
     render(<KanbanBoard />);
+    await screen.findByDisplayValue("Backlog");
     const column = getFirstColumn();
     const addButton = within(column).getByRole("button", {
       name: /add a card/i,
@@ -99,6 +143,7 @@ describe("Auth flow", () => {
     await userEvent.type(screen.getByLabelText(/username/i), "user");
     await userEvent.type(screen.getByLabelText(/password/i), "password");
     await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
+    await screen.findByDisplayValue("Backlog");
 
     const column = screen.getAllByTestId(/column-/i)[0];
     const addButton = within(column).getByRole("button", { name: /add a card/i });
@@ -114,6 +159,7 @@ describe("Auth flow", () => {
     await userEvent.type(screen.getByLabelText(/username/i), "user");
     await userEvent.type(screen.getByLabelText(/password/i), "password");
     await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
+    await screen.findByDisplayValue("Backlog");
 
     expect(screen.getByText("Persisted card")).toBeInTheDocument();
   });
