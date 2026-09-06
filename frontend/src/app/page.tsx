@@ -100,7 +100,7 @@ export default function Home() {
           Log out
         </button>
       </header>
-      <KanbanBoard />
+      <KanbanBoard username={VALID_USERNAME} />
     </div>
   );
 }
