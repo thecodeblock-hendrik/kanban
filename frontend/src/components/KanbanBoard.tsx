@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -15,9 +15,30 @@ import { KanbanColumn } from "@/components/KanbanColumn";
 import { KanbanCardPreview } from "@/components/KanbanCardPreview";
 import { createId, initialData, moveCard, type BoardData } from "@/lib/kanban";
 
+const STORAGE_KEY = "kanban-board-state";
+
+const readSavedBoard = (): BoardData => {
+  if (typeof window === "undefined") {
+    return initialData;
+  }
+
+  try {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    return saved ? (JSON.parse(saved) as BoardData) : initialData;
+  } catch {
+    return initialData;
+  }
+};
+
 export const KanbanBoard = () => {
-  const [board, setBoard] = useState<BoardData>(() => initialData);
+  const [board, setBoard] = useState<BoardData>(() => readSavedBoard());
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(board));
+    }
+  }, [board]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {

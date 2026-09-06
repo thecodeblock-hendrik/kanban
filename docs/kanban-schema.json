@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PM Kanban Database Schema",
+  "description": "SQLite schema proposal for the MVP project management app.",
+  "database": "sqlite",
+  "mvp_constraints": [
+    "Only one hardcoded login user is required for the MVP: username 'user' with password 'password'.",
+    "The database is designed to support multiple users in the future.",
+    "Each signed-in user has one active Kanban board in the MVP, though the schema supports multiple boards per user.",
+    "Columns are fixed by default but can be renamed by the user."
+  ],
+  "tables": [
+    {
+      "name": "users",
+      "purpose": "Stores users for future multi-user support.",
+      "columns": [
+        { "name": "id", "type": "INTEGER", "primary_key": true, "auto_increment": true },
+        { "name": "username", "type": "TEXT", "not_null": true, "unique": true },
+        { "name": "password_hash", "type": "TEXT", "not_null": true },
+        { "name": "created_at", "type": "TEXT", "not_null": true, "default": "CURRENT_TIMESTAMP" }
+      ],
+      "indexes": [
+        "UNIQUE(username)"
+      ]
+    },
+    {
+      "name": "boards",
+      "purpose": "Stores each user's board or board set.",
+      "columns": [
+        { "name": "id", "type": "INTEGER", "primary_key": true, "auto_increment": true },
+        { "name": "user_id", "type": "INTEGER", "not_null": true, "foreign_key": "users(id)" },
+        { "name": "name", "type": "TEXT", "not_null": true, "default": "Project Board" },
+        { "name": "created_at", "type": "TEXT", "not_null": true, "default": "CURRENT_TIMESTAMP" },
+        { "name": "updated_at", "type": "TEXT", "not_null": true, "default": "CURRENT_TIMESTAMP" }
+      ],
+      "indexes": [
+        "INDEX(user_id)"
+      ]
+    },
+    {
+      "name": "board_columns",
+      "purpose": "Defines the board columns and their order.",
+      "columns": [
+        { "name": "id", "type": "INTEGER", "primary_key": true, "auto_increment": true },
+        { "name": "board_id", "type": "INTEGER", "not_null": true, "foreign_key": "boards(id)" },
+        { "name": "title", "type": "TEXT", "not_null": true },
+        { "name": "position", "type": "INTEGER", "not_null": true },
+        { "name": "created_at", "type": "TEXT", "not_null": true, "default": "CURRENT_TIMESTAMP" }
+      ],
+      "indexes": [
+        "INDEX(board_id, position)"
+      ]
+    },
+    {
+      "name": "board_cards",
+      "purpose": "Stores cards and their placement within columns.",
+      "columns": [
+        { "name": "id", "type": "INTEGER", "primary_key": true, "auto_increment": true },
+        { "name": "board_id", "type": "INTEGER", "not_null": true, "foreign_key": "boards(id)" },
+        { "name": "column_id", "type": "INTEGER", "not_null": true, "foreign_key": "board_columns(id)" },
+        { "name": "title", "type": "TEXT", "not_null": true },
+        { "name": "details", "type": "TEXT", "default": "" },
+        { "name": "position", "type": "INTEGER", "not_null": true },
+        { "name": "created_at", "type": "TEXT", "not_null": true, "default": "CURRENT_TIMESTAMP" },
+        { "name": "updated_at", "type": "TEXT", "not_null": true, "default": "CURRENT_TIMESTAMP" }
+      ],
+      "indexes": [
+        "INDEX(board_id, column_id, position)"
+      ]
+    }
+  ],
+  "relationships": [
+    "One user may have many boards.",
+    "One board has many columns.",
+    "One board has many cards.",
+    "Each card belongs to exactly one column, and its position is tracked within that column."
+  ],
+  "default_board_layout": {
+    "columns": [
+      "Backlog",
+      "Discovery",
+      "In Progress",
+      "Review",
+      "Done"
+    ]
+  }
+}
