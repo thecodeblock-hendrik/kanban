@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cd \"/Users/thecodeblock/Documents/Dev Projects/pm\" && python3 -m pytest backend/tests/test_board_api\\.py -q$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

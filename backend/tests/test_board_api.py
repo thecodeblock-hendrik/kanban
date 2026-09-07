@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 import pytest
 
@@ -84,3 +86,62 @@ def test_ai_test_endpoint_reports_actionable_errors(monkeypatch) -> None:
 
     assert response.status_code == 503
     assert "OPENROUTER_API_KEY" in response.json()["detail"]
+
+
+def test_ai_board_endpoint_accepts_valid_structured_response(monkeypatch) -> None:
+    def fake_call_openrouter(prompt: str) -> str:
+        assert "conversation history" in prompt
+        assert "Rename the backlog" in prompt
+        return json.dumps(
+            {
+                "response": "Updated the backlog column title.",
+                "board_update": {
+                    "columns": [
+                        {"id": "col-backlog", "title": "Launch Queue", "cardIds": ["card-1", "card-2"]},
+                        {"id": "col-discovery", "title": "Discovery", "cardIds": ["card-3"]},
+                        {"id": "col-progress", "title": "In Progress", "cardIds": ["card-4", "card-5"]},
+                        {"id": "col-review", "title": "Review", "cardIds": ["card-6"]},
+                        {"id": "col-done", "title": "Done", "cardIds": ["card-7", "card-8"]},
+                    ],
+                    "cards": {
+                        "card-1": {"id": "card-1", "title": "Align roadmap themes", "details": "Draft quarterly themes with impact statements and metrics."},
+                        "card-2": {"id": "card-2", "title": "Gather customer signals", "details": "Review support tags, sales notes, and churn feedback."},
+                        "card-3": {"id": "card-3", "title": "Prototype analytics view", "details": "Sketch initial dashboard layout and key drill-downs."},
+                        "card-4": {"id": "card-4", "title": "Refine status language", "details": "Standardize column labels and tone across the board."},
+                        "card-5": {"id": "card-5", "title": "Design card layout", "details": "Add hierarchy and spacing for scanning dense lists."},
+                        "card-6": {"id": "card-6", "title": "QA micro-interactions", "details": "Verify hover, focus, and loading states."},
+                        "card-7": {"id": "card-7", "title": "Ship marketing page", "details": "Final copy approved and asset pack delivered."},
+                        "card-8": {"id": "card-8", "title": "Close onboarding sprint", "details": "Document release notes and share internally."},
+                    },
+                },
+            }
+        )
+
+    monkeypatch.setattr(main, "call_openrouter", fake_call_openrouter)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/ai/board?user=user",
+        json={
+            "prompt": "Rename the backlog to Launch Queue.",
+            "history": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["response"] == "Updated the backlog column title."
+    assert payload["board"]["columns"][0]["title"] == "Launch Queue"
+
+
+def test_ai_board_endpoint_rejects_malformed_structured_response(monkeypatch) -> None:
+    monkeypatch.setattr(main, "call_openrouter", lambda prompt: '{"response": 123}')
+
+    client = TestClient(app)
+    response = client.post("/api/ai/board?user=user", json={"prompt": "Rename the column."})
+
+    assert response.status_code == 400
+    assert "structured" in response.json()["detail"].lower()
