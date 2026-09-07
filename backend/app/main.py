@@ -1,7 +1,11 @@
 import json
+import os
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -32,6 +36,89 @@ DEFAULT_CARDS = {
 }
 
 app = FastAPI(title="PM MVP Backend")
+OPENROUTER_MODEL = "openai/gpt-oss-120b"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+ENV_FILE = BASE_DIR / ".env"
+
+
+def load_env() -> None:
+    if not ENV_FILE.exists():
+        return
+
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+
+        key, value = stripped.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def get_openrouter_api_key() -> str:
+    load_env()
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is missing. Add it to the project .env file.")
+    return api_key
+
+
+def normalize_ai_prompt(prompt: str) -> str:
+    normalized = prompt.strip()
+    normalized = re.sub(r"(?<=\d)\s*\+\s*(?=\d)", " + ", normalized)
+    normalized = re.sub(r"(?<=\d)\s+(?=\d)", " + ", normalized)
+    return normalized
+
+
+def call_openrouter(prompt: str) -> str:
+    api_key = get_openrouter_api_key()
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+    request = urllib_request.Request(
+        OPENROUTER_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:8000",
+            "X-Title": "PM MVP",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib_request.urlopen(request, timeout=30) as response:
+            body = response.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        error_details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"OpenRouter request failed: {error_details}") from exc
+    except urllib_error.URLError as exc:
+        raise RuntimeError(f"OpenRouter is unavailable: {exc.reason}") from exc
+
+    response_data = json.loads(body)
+    choices = response_data.get("choices") or []
+    if not choices:
+        error = response_data.get("error")
+        if error:
+            raise RuntimeError(str(error))
+        raise RuntimeError("OpenRouter response did not include any choices.")
+
+    content = choices[0].get("message", {}).get("content")
+    if isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text_value = item.get("text") or item.get("content")
+                if isinstance(text_value, str):
+                    text_parts.append(text_value)
+        content = "".join(text_parts)
+
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("OpenRouter response did not include readable text content.")
+
+    return content.strip()
 
 
 def get_connection() -> sqlite3.Connection:
@@ -224,6 +311,16 @@ async def startup_event() -> None:
 @app.get("/api/health")
 async def healthcheck() -> JSONResponse:
     return JSONResponse({"status": "ok", "service": "pm-mvp-backend"})
+
+
+@app.get("/api/ai/test")
+async def test_ai(prompt: str = Query("2 + 2", min_length=1)) -> dict[str, Any]:
+    normalized_prompt = normalize_ai_prompt(prompt)
+    try:
+        response = call_openrouter(normalized_prompt)
+        return {"ok": True, "model": OPENROUTER_MODEL, "prompt": normalized_prompt, "response": response}
+    except Exception as exc:  # pragma: no cover - exercised via HTTP tests
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/board")
