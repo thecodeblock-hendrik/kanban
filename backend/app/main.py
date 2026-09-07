@@ -121,6 +121,83 @@ def call_openrouter(prompt: str) -> str:
     return content.strip()
 
 
+def build_board_prompt(user_prompt: str, history: list[dict[str, Any]], board: dict[str, Any]) -> str:
+    serialized_history = json.dumps(history, ensure_ascii=False)
+    serialized_board = json.dumps(board, ensure_ascii=False)
+    return (
+        "You are helping manage a Kanban board. "
+        "Return valid JSON only. "
+        "Use this exact schema: {\"response\": string, \"board_update\": {\"columns\": [...], \"cards\": {...}}}. "
+        "The board_update field is optional and should only be included when the user asks for a board change. "
+        "Current board JSON: "
+        f"{serialized_board}. "
+        "conversation history: "
+        f"{serialized_history}. "
+        f"User prompt: {user_prompt}."
+    )
+
+
+def validate_ai_board_update(board_update: Any) -> dict[str, Any]:
+    if board_update is None:
+        return {}
+    if not isinstance(board_update, dict):
+        raise ValueError("AI board update must be an object.")
+
+    columns = board_update.get("columns")
+    cards = board_update.get("cards")
+
+    if columns is not None:
+        if not isinstance(columns, list):
+            raise ValueError("AI board update columns must be a list.")
+        for column in columns:
+            if not isinstance(column, dict):
+                raise ValueError("AI board column entries must be objects.")
+            missing = {"id", "title", "cardIds"} - set(column)
+            if missing:
+                raise ValueError("AI board column entries are missing required fields.")
+            if not isinstance(column["id"], str) or not isinstance(column["title"], str):
+                raise ValueError("AI board columns require a string id and title.")
+            if not isinstance(column["cardIds"], list):
+                raise ValueError("AI board column cardIds must be a list.")
+
+    if cards is not None:
+        if not isinstance(cards, dict):
+            raise ValueError("AI board cards must be an object keyed by card id.")
+        for card_id, card in cards.items():
+            if not isinstance(card_id, str):
+                raise ValueError("AI board card ids must be strings.")
+            if not isinstance(card, dict):
+                raise ValueError("AI board card entries must be objects.")
+            if set(card) < {"id", "title", "details"}:
+                raise ValueError("AI board cards require id, title, and details fields.")
+
+    if columns is None and cards is not None:
+        raise ValueError("AI board updates must include the full columns list when cards are present.")
+    if columns is not None and cards is None:
+        raise ValueError("AI board updates must include the cards object when columns are present.")
+
+    return board_update
+
+
+def parse_ai_board_response(raw_response: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(raw_response)
+    except json.JSONDecodeError as exc:
+        raise ValueError("AI response was not valid JSON.") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("AI response must be a structured JSON object.")
+
+    response_text = payload.get("response")
+    if not isinstance(response_text, str) or not response_text.strip():
+        raise ValueError("AI response must include a non-empty string 'response' field.")
+
+    board_update = payload.get("board_update")
+    validated_update = validate_ai_board_update(board_update)
+
+    return {"response": response_text.strip(), "board_update": validated_update if board_update is not None else None}
+
+
 def get_connection() -> sqlite3.Connection:
     DB_DIR.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
@@ -321,6 +398,44 @@ async def test_ai(prompt: str = Query("2 + 2", min_length=1)) -> dict[str, Any]:
         return {"ok": True, "model": OPENROUTER_MODEL, "prompt": normalized_prompt, "response": response}
     except Exception as exc:  # pragma: no cover - exercised via HTTP tests
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/ai/board")
+async def ai_board(body: dict[str, Any], user: str = Query(..., min_length=1)) -> dict[str, Any]:
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="AI request payload must be a JSON object.")
+
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise HTTPException(status_code=400, detail="AI request must include a non-empty prompt string.")
+
+    history = body.get("history", [])
+    if not isinstance(history, list):
+        raise HTTPException(status_code=400, detail="AI request history must be a list when provided.")
+
+    _, board_id = get_or_create_user_board(user)
+    board_state = serialize_board(board_id)
+    model_prompt = build_board_prompt(prompt, history, board_state)
+
+    try:
+        raw_response = call_openrouter(model_prompt)
+    except Exception as exc:  # pragma: no cover - exercised via HTTP tests
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    try:
+        parsed = parse_ai_board_response(raw_response)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"AI response was not a valid structured JSON payload: {exc}") from exc
+
+    response_text = parsed["response"]
+    payload = {"response": response_text}
+
+    if parsed.get("board_update") is not None:
+        payload["board"] = replace_board_state(user, parsed["board_update"])
+    else:
+        payload["board"] = serialize_board(board_id)
+
+    return payload
 
 
 @app.get("/api/board")

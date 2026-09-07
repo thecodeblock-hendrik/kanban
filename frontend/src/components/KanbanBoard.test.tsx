@@ -92,6 +92,53 @@ describe("KanbanBoard", () => {
 
     expect(within(column).queryByText("New card")).not.toBeInTheDocument();
   });
+
+  it("sends a chat message to the AI and refreshes the board after a valid AI update", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/board") && init?.method === "PUT") {
+        serverBoard = JSON.parse(String(init.body)) as BoardData;
+        return new Response(JSON.stringify({ user: "user", board: structuredClone(serverBoard) }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      if (url.includes("/api/ai/board")) {
+        return new Response(
+          JSON.stringify({
+            response: "Updated the board.",
+            board: {
+              columns: [
+                { id: "col-backlog", title: "Launch Queue", cardIds: ["card-1", "card-2"] },
+                { id: "col-discovery", title: "Discovery", cardIds: ["card-3"] },
+                { id: "col-progress", title: "In Progress", cardIds: ["card-4", "card-5"] },
+                { id: "col-review", title: "Review", cardIds: ["card-6"] },
+                { id: "col-done", title: "Done", cardIds: ["card-7", "card-8"] },
+              ],
+              cards: serverBoard.cards,
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      return new Response(JSON.stringify({ user: "user", board: structuredClone(serverBoard) }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    render(<KanbanBoard username="user" />);
+    await screen.findByDisplayValue("Backlog");
+
+    await userEvent.type(screen.getByLabelText(/ask the AI/i), "Rename the backlog to Launch Queue.");
+    await userEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    expect(await screen.findByText("Updated the board.")).toBeInTheDocument();
+    expect(await screen.findByDisplayValue("Launch Queue")).toBeInTheDocument();
+  });
 });
 
 describe("Auth flow", () => {
