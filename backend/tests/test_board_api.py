@@ -54,3 +54,33 @@ def test_board_persists_updated_state() -> None:
     assert persisted["cards"]["persisted-card"]["details"] == "Saved in the database"
 
     assert original["columns"][0]["title"] != persisted["columns"][0]["title"]
+
+
+def test_ai_test_endpoint_returns_model_response(monkeypatch) -> None:
+    def fake_call_openrouter(prompt: str) -> str:
+        assert prompt == "2 + 2"
+        return "4"
+
+    monkeypatch.setattr(main, "call_openrouter", fake_call_openrouter)
+
+    client = TestClient(app)
+    response = client.get("/api/ai/test?prompt=2+2")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["response"] == "4"
+    assert payload["model"] == main.OPENROUTER_MODEL
+
+
+def test_ai_test_endpoint_reports_actionable_errors(monkeypatch) -> None:
+    def fake_call_openrouter(prompt: str) -> str:
+        raise RuntimeError("OPENROUTER_API_KEY is missing. Add it to the project .env file.")
+
+    monkeypatch.setattr(main, "call_openrouter", fake_call_openrouter)
+
+    client = TestClient(app)
+    response = client.get("/api/ai/test?prompt=2+2")
+
+    assert response.status_code == 503
+    assert "OPENROUTER_API_KEY" in response.json()["detail"]
