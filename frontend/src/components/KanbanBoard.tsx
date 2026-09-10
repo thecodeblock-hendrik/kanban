@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
   PointerSensor,
   useSensor,
   useSensors,
-  closestCorners,
+  pointerWithin,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
@@ -29,6 +29,7 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
   const [isLoaded, setIsLoaded] = useState(false);
   const [error, setError] = useState("");
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
+  const saveSequenceRef = useRef(0);
   const [aiInput, setAiInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     { role: "assistant", content: "Hi! Ask me to rename a column, create a card, or update the board." },
@@ -72,19 +73,29 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
       return;
     }
 
+    const saveId = ++saveSequenceRef.current;
     const saveBoard = async () => {
       try {
         const response = await fetch(`/api/board?user=${encodeURIComponent(username)}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(board),
+          keepalive: true,
         });
+
+        if (saveId !== saveSequenceRef.current) {
+          return;
+        }
+
         if (!response.ok) {
           throw new Error("Unable to save the board.");
         }
+
         setError("");
       } catch {
-        setError("Unable to save the board to the server.");
+        if (saveId === saveSequenceRef.current) {
+          setError("Unable to save the board to the server.");
+        }
       }
     };
 
@@ -107,13 +118,22 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
     const { active, over } = event;
     setActiveCardId(null);
 
-    if (!over || active.id === over.id) {
+    if (!over) {
+      return;
+    }
+
+    const rawOverId = typeof over.data?.current?.columnId === "string"
+      ? over.data.current.columnId
+      : String(over.id);
+    const overColumnId = rawOverId.replace(/-empty$/, "");
+
+    if (active.id === overColumnId) {
       return;
     }
 
     setBoard((prev) => ({
       ...prev,
-      columns: moveCard(prev.columns, active.id as string, over.id as string),
+      columns: moveCard(prev.columns, String(active.id), overColumnId),
     }));
   };
 
@@ -254,7 +274,7 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
           <DndContext
             sensors={sensors}
-            collisionDetection={closestCorners}
+            collisionDetection={pointerWithin}
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
           >

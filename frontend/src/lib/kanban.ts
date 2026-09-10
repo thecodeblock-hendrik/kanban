@@ -72,11 +72,14 @@ export const initialData: BoardData = {
 };
 
 const isColumnId = (columns: Column[], id: string) =>
-  columns.some((column) => column.id === id);
+  columns.some((column) => column.id === normalizeColumnId(id));
+
+const normalizeColumnId = (id: string) => id.replace(/-empty$/, "");
 
 const findColumnId = (columns: Column[], id: string) => {
-  if (isColumnId(columns, id)) {
-    return id;
+  const normalizedId = normalizeColumnId(id);
+  if (isColumnId(columns, normalizedId)) {
+    return normalizedId;
   }
   return columns.find((column) => column.cardIds.includes(id))?.id;
 };
@@ -116,7 +119,7 @@ export const moveCard = (
     }
 
     const oldIndex = activeColumn.cardIds.indexOf(activeId);
-    const newIndex = activeColumn.cardIds.indexOf(overId);
+    const newIndex = activeColumn.cardIds.indexOf(normalizeColumnId(overId));
 
     if (oldIndex === -1 || newIndex === -1 || oldIndex === newIndex) {
       return columns;
@@ -145,7 +148,7 @@ export const moveCard = (
   if (isOverColumn) {
     nextOverCardIds.push(activeId);
   } else {
-    const overIndex = overColumn.cardIds.indexOf(overId);
+    const overIndex = overColumn.cardIds.indexOf(normalizeColumnId(overId));
     const insertIndex = overIndex === -1 ? nextOverCardIds.length : overIndex;
     nextOverCardIds.splice(insertIndex, 0, activeId);
   }
