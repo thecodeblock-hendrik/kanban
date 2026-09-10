@@ -58,6 +58,48 @@ test("moves a card between columns", async ({ page }) => {
   await expect(targetColumn.getByTestId("card-card-1")).toBeVisible();
 });
 
+test("moves a card into an empty column", async ({ page, request }) => {
+  const emptyBoard = structuredClone(initialData);
+  emptyBoard.columns = [
+    { id: "col-backlog", title: "Backlog", cardIds: ["card-1", "card-2"] },
+    { id: "col-discovery", title: "Discovery", cardIds: ["card-3"] },
+    { id: "col-progress", title: "In Progress", cardIds: ["card-4", "card-5"] },
+    { id: "col-review", title: "Review", cardIds: [] },
+    { id: "col-done", title: "Done", cardIds: ["card-6", "card-7", "card-8"] },
+  ];
+
+  const response = await request.put("/api/board?user=user", {
+    data: emptyBoard,
+  });
+  expect(response.ok()).toBeTruthy();
+
+  await page.goto("/");
+  await signIn(page);
+
+  const card = page.getByTestId("card-card-1");
+  const targetColumn = page.getByTestId("column-col-review");
+  const cardBox = await card.boundingBox();
+  const columnBox = await targetColumn.boundingBox();
+
+  if (!cardBox || !columnBox) {
+    throw new Error("Unable to resolve drag coordinates.");
+  }
+
+  await page.mouse.move(
+    cardBox.x + cardBox.width / 2,
+    cardBox.y + cardBox.height / 2
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    columnBox.x + columnBox.width / 2,
+    columnBox.y + 120,
+    { steps: 12 }
+  );
+  await page.mouse.up();
+
+  await expect(targetColumn.getByTestId("card-card-1")).toBeVisible();
+});
+
 test("keeps a column rename after refresh", async ({ page }) => {
   await page.goto("/");
   await signIn(page);

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Home from "@/app/page";
@@ -49,6 +49,30 @@ describe("KanbanBoard", () => {
     await waitFor(() => {
       expect(serverBoard.columns[0].title).toBe("Saved Backlog");
     });
+  });
+
+  it("keeps the latest value when saving rapid board updates", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    fetchMock.mockClear();
+
+    render(<KanbanBoard username="user" />);
+    await screen.findByDisplayValue("Backlog");
+
+    const input = within(getFirstColumn()).getByLabelText("Column title");
+    fireEvent.change(input, { target: { value: "Draft 1" } });
+    fireEvent.change(input, { target: { value: "Draft 2" } });
+    fireEvent.change(input, { target: { value: "Final draft" } });
+
+    await waitFor(
+      () => {
+        const putCalls = fetchMock.mock.calls.filter(
+          ([url, init]) => String(url).includes("/api/board") && init?.method === "PUT"
+        );
+        expect(putCalls.length).toBeGreaterThan(0);
+        expect(serverBoard.columns[0].title).toBe("Final draft");
+      },
+      { timeout: 2000 }
+    );
   });
 
   it("renders five columns", async () => {

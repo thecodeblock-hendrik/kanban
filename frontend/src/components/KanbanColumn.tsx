@@ -20,7 +20,10 @@ export const KanbanColumn = ({
   onAddCard,
   onDeleteCard,
 }: KanbanColumnProps) => {
-  const { setNodeRef, isOver } = useDroppable({ id: column.id });
+  const { setNodeRef, isOver } = useDroppable({
+    id: column.id,
+    data: { type: "column", columnId: column.id },
+  });
 
   return (
     <section
