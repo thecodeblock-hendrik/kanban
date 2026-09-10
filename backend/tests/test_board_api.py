@@ -10,6 +10,7 @@ from backend.app import main
 def isolated_database(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DB_DIR", tmp_path)
     monkeypatch.setattr(main, "DB_PATH", tmp_path / "pm.db")
+    main.init_db()
 
 
 app = main.app
@@ -56,6 +57,48 @@ def test_board_persists_updated_state() -> None:
     assert persisted["cards"]["persisted-card"]["details"] == "Saved in the database"
 
     assert original["columns"][0]["title"] != persisted["columns"][0]["title"]
+
+
+def test_invalid_board_update_does_not_mutate_existing_state() -> None:
+    client = TestClient(app)
+    original = client.get("/api/board?user=user").json()["board"]
+    invalid = {
+        "columns": [
+            {"id": "col-backlog", "title": "Changed", "cardIds": ["missing-card"]},
+            *original["columns"][1:],
+        ],
+        "cards": original["cards"],
+    }
+
+    response = client.put("/api/board?user=user", json=invalid)
+
+    assert response.status_code == 400
+    assert "missing cards" in response.json()["detail"]
+    assert client.get("/api/board?user=user").json()["board"] == original
+
+
+def test_duplicate_column_and_card_references_are_rejected() -> None:
+    client = TestClient(app)
+    original = client.get("/api/board?user=user").json()["board"]
+
+    duplicate_column = {
+        "columns": [original["columns"][0], original["columns"][0]],
+        "cards": original["cards"],
+    }
+    response = client.put("/api/board?user=user", json=duplicate_column)
+    assert response.status_code == 400
+    assert "Duplicate board column id" in response.json()["detail"]
+
+    duplicate_card = {
+        "columns": [
+            {"id": "col-backlog", "title": "Backlog", "cardIds": ["card-1", "card-1"]},
+            *original["columns"][1:],
+        ],
+        "cards": original["cards"],
+    }
+    response = client.put("/api/board?user=user", json=duplicate_card)
+    assert response.status_code == 400
+    assert "appears more than once" in response.json()["detail"]
 
 
 def test_ai_test_endpoint_returns_model_response(monkeypatch) -> None:
