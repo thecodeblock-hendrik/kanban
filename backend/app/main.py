@@ -199,7 +199,6 @@ def parse_ai_board_response(raw_response: str) -> dict[str, Any]:
 
 
 def get_connection() -> sqlite3.Connection:
-    DB_DIR.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
     return connection
@@ -263,7 +262,6 @@ def init_db() -> None:
 
 
 def get_or_create_user_board(username: str) -> tuple[int, int]:
-    init_db()
     with get_connection() as connection:
         user = connection.execute(
             "SELECT id FROM users WHERE username = ?",
@@ -303,7 +301,6 @@ def get_or_create_user_board(username: str) -> tuple[int, int]:
 
 
 def serialize_board(board_id: int) -> dict[str, Any]:
-    init_db()
     with get_connection() as connection:
         columns = connection.execute(
             "SELECT id, title FROM board_columns WHERE board_id = ? ORDER BY position ASC",
@@ -341,16 +338,71 @@ def serialize_board(board_id: int) -> dict[str, Any]:
     return {"columns": column_payload, "cards": card_lookup}
 
 
+def validate_board_state(board_state: Any) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    if not isinstance(board_state, dict):
+        raise ValueError("Board payload must be an object.")
+
+    columns = board_state.get("columns")
+    cards = board_state.get("cards")
+    if not isinstance(columns, list):
+        raise ValueError("Board columns must be a list.")
+    if not isinstance(cards, dict):
+        raise ValueError("Board cards must be an object keyed by card id.")
+
+    column_ids: set[str] = set()
+    referenced_card_ids: set[str] = set()
+    for column in columns:
+        if not isinstance(column, dict):
+            raise ValueError("Board columns must be objects.")
+        if not {"id", "title", "cardIds"}.issubset(column):
+            raise ValueError("Board columns require id, title, and cardIds fields.")
+        column_id = column["id"]
+        if not isinstance(column_id, str) or not column_id:
+            raise ValueError("Board column ids must be non-empty strings.")
+        if column_id in column_ids:
+            raise ValueError(f"Duplicate board column id: {column_id}")
+        if not isinstance(column["title"], str) or not column["title"].strip():
+            raise ValueError("Board column titles must be non-empty strings.")
+        if not isinstance(column["cardIds"], list):
+            raise ValueError("Board column cardIds must be lists.")
+        column_ids.add(column_id)
+
+        for card_id in column["cardIds"]:
+            if not isinstance(card_id, str) or not card_id:
+                raise ValueError("Board card references must be non-empty strings.")
+            if card_id in referenced_card_ids:
+                raise ValueError(f"Card appears more than once on the board: {card_id}")
+            referenced_card_ids.add(card_id)
+
+    for card_id, card in cards.items():
+        if not isinstance(card_id, str) or not card_id:
+            raise ValueError("Board card ids must be non-empty strings.")
+        if not isinstance(card, dict):
+            raise ValueError("Board cards must be objects.")
+        if card.get("id") != card_id:
+            raise ValueError(f"Board card id does not match its key: {card_id}")
+        if not isinstance(card.get("title"), str):
+            raise ValueError(f"Board card title must be a string: {card_id}")
+        if "details" in card and not isinstance(card["details"], str):
+            raise ValueError(f"Board card details must be a string: {card_id}")
+
+    missing_cards = referenced_card_ids - set(cards)
+    if missing_cards:
+        raise ValueError(f"Board references missing cards: {sorted(missing_cards)}")
+    orphaned_cards = set(cards) - referenced_card_ids
+    if orphaned_cards:
+        raise ValueError(f"Board contains unassigned cards: {sorted(orphaned_cards)}")
+
+    return columns, cards
+
+
 def replace_board_state(username: str, board_state: dict[str, Any]) -> dict[str, Any]:
-    init_db()
+    columns, cards = validate_board_state(board_state)
     _, board_id = get_or_create_user_board(username)
 
     with get_connection() as connection:
         connection.execute("DELETE FROM board_cards WHERE board_id = ?", (board_id,))
         connection.execute("DELETE FROM board_columns WHERE board_id = ?", (board_id,))
-
-        columns = board_state.get("columns", [])
-        cards = board_state.get("cards", {})
 
         for position, column in enumerate(columns):
             column_id = column["id"]
@@ -431,7 +483,10 @@ async def ai_board(body: dict[str, Any], user: str = Query(..., min_length=1)) -
     payload = {"response": response_text}
 
     if parsed.get("board_update") is not None:
-        payload["board"] = replace_board_state(user, parsed["board_update"])
+        try:
+            payload["board"] = replace_board_state(user, parsed["board_update"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"AI board update was invalid: {exc}") from exc
     else:
         payload["board"] = serialize_board(board_id)
 
@@ -449,7 +504,10 @@ async def update_board(body: dict[str, Any], user: str = Query(..., min_length=1
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Board payload must be a JSON object")
 
-    board = replace_board_state(user, body)
+    try:
+        board = replace_board_state(user, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"user": user, "board": board}
 
 
