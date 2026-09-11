@@ -1,241 +1,199 @@
 # Code Review
 
-Full-repo review of `backend/` and `frontend/` (state as of commit `dfee079`,
-2026-09-11). Findings are ranked most-severe first. Each includes the
-concrete failure scenario and a proposed action.
+Reviewed: 2026-09-11
 
-**Status:** Findings 1-5 (High and Medium severity) have been fixed and
-verified — backend pytest suite (10/10), frontend Vitest suite (16/16),
-`next build`, and ESLint all pass. Findings 6-7 (Low severity) are left
-open as documented improvements, not yet actioned.
+## Architecture Overview
 
-## 1. Autosave can silently persist a stale board (lost update) — FIXED
+The project follows a clean monorepo design: Python FastAPI backend serving a statically-exported Next.js frontend from a single Docker container. The separation of concerns is well-structured — `main.py` handles routing, `db.py` handles persistence, `ai.py` handles OpenRouter integration, and the frontend owns all UI logic.
 
-**File:** `frontend/src/components/KanbanBoard.tsx:71-103`
+The single-container approach is practical for an MVP. Static export of the frontend eliminates the need for a separate Node.js runtime in production.
 
-The save effect fires a new `PUT /api/board` on every `board` state change,
-with no debounce and no cancellation of in-flight requests:
+## Backend
 
-```tsx
-useEffect(() => {
-  if (!isLoaded) return;
-  const saveId = ++saveSequenceRef.current;
-  const saveBoard = async () => {
-    const response = await fetch(`/api/board?user=...`, { method: "PUT", body: JSON.stringify(board), ... });
-    if (saveId !== saveSequenceRef.current) return; // only suppresses the error banner
-    ...
-  };
-  void saveBoard();
-}, [board, isLoaded, username]);
-```
+### `main.py` (122 lines)
 
-`saveSequenceRef` only decides whether to update the `error` state for a
-*response* that arrives late — it does not stop the underlying `fetch` from
-being sent, and it does not stop an older request from finishing (and
-writing to the DB) after a newer one. Fast successive edits (typing a column
-title character-by-character, or several quick drags) each launch an
-independent PUT with the board snapshot at that instant. Network/server
-timing is not guaranteed to preserve send order, so an older PUT can
-complete *after* a newer one and overwrite it in SQLite. The UI keeps
-showing the newest state (it's driven by local `board` state, not the
-server response), so the user sees no error — the regression is silent and
-only surfaces on next reload, when the server returns the stale version.
+**Good**: Clean route definitions, proper HTTP status codes, typed return values. The `lifespan` context manager for startup is idiomatic FastAPI.
 
-This is a documented tradeoff in `CLAUDE.md` ("drop stale/out-of-order save
-*responses*... rather than a debounce"), but that only protects the error
-banner, not the data itself.
+**Issues**:
 
-**Proposed action:** Serialize saves — chain each save on the previous
-save's promise (or maintain a single in-flight request and queue only the
-latest pending board), so at most one PUT is in flight and it always
-reflects the latest `board`. A debounce (see finding 5) reduces how often
-this triggers but doesn't remove the race by itself; sequencing is the
-actual fix.
+- **No input sanitization on AI prompt** (line 49-51): The user prompt is extracted from the request body and passed directly to the AI system prompt. There is no sanitization or length limit, allowing prompt injection attacks. A user could craft a prompt that overrides the system instructions.
+- **`body: dict[str, Any]`** (lines 45, 92): FastAPI will accept any JSON object here. Using a Pydantic model would provide automatic validation, serialization, and OpenAPI schema documentation. The manual type checks at lines 46-55 replicate what Pydantic does for free.
+- **No rate limiting**: All endpoints are unprotected. A simple abuse case: spam `POST /api/ai/board` to exhaust the OpenRouter API quota.
+- **Stale `board_id` variable** (line 80): After calling `replace_board_state`, the code falls back to `serialize_board(board_id)` using the original `board_id` from line 57. This works because `replace_board_state` returns the serialized board directly, but the variable name shadowing is confusing.
 
-## 2. SQLite connections are opened but never closed — FIXED
+### `db.py` (273 lines)
 
-**File:** `backend/app/main.py:201-205` (`get_connection`), used at
-lines 209, 265, 304, 403.
+**Good**: The `get_connection()` context manager is clean — commit on success, rollback on exception, always close. The `validate_board_state` function is thorough, checking duplicates, orphans, and missing references. Transaction safety in `replace_board_state` (delete-then-insert) prevents partial writes.
 
-```python
-def get_connection() -> sqlite3.Connection:
-    connection = sqlite3.connect(DB_PATH)
-    connection.row_factory = sqlite3.Row
-    return connection
-```
+**Issues**:
 
-Every call site uses `with get_connection() as connection:`. `sqlite3`'s
-context manager only commits/rolls back the transaction on exit — it does
-**not** call `connection.close()`. Every request to `/api/board`,
-`/api/ai/board`, plus `init_db()` at startup, opens a brand-new SQLite
-connection/file handle that is then only released whenever CPython's
-refcounting GC happens to collect it. Under sustained traffic this leaks
-file descriptors and DB handles, and increases the odds of `database is
-locked` / `too many open files` errors, especially since finding 1 can
-already cause several concurrent writers to the same file.
+- **Plaintext password** (line 100): `password_hash` column stores `"password"` as a literal string. The column name is misleading — it is not a hash. For the MVP this is acceptable, but the column should be renamed to `password` or the value should actually be hashed.
+- **`get_or_create_user_board` creates boards for unknown users** (lines 105-141): If `user is None` it raises 404, but if the user exists with no board it silently creates one with default data. This means any username that exists in the `users` table (including the seeded `"user"`) will get a fresh board on first access. This is the intended MVP behavior but is worth noting — there is no concept of "board not yet created."
+- **N+1-like pattern in `serialize_board`** (lines 166-170): For each column, it filters the full `cards` list to find card IDs belonging to that column. With 5 columns and 8 cards this is fine, but with large boards a dictionary keyed by `column_id` would be more efficient.
+- **`serialize_board` card ordering** (lines 151-153): Cards are ordered by `position` globally, but `column_card_ids` (lines 166-170) filters by `column_id` without re-sorting by position. The order happens to be correct because cards are inserted in position order per column, but this is fragile — a future bug could break card ordering silently.
+- **No indexes**: The `board_cards` table has no index on `board_id` or `column_id`. For the MVP dataset size this is irrelevant, but would be a problem at scale.
 
-**Proposed action:** Either call `connection.close()` in a `finally` block
-around each `with get_connection() as connection:` use, or centralize
-access behind a single module-level connection / a small helper that closes
-explicitly (e.g. `contextlib.closing(get_connection())`).
+### `ai.py` (172 lines)
 
-## 3. AI board-update field validation uses the wrong set comparison — FIXED
+**Good**: The prompt construction is clear and structured. The response parser handles both text content and list-format content from OpenRouter. The `validate_ai_board_update` function is thorough about rejecting partial updates (columns without cards or vice versa).
 
-**File:** `backend/app/main.py:163-172` (`validate_ai_board_update`)
+**Issues**:
 
-```python
-for card_id, card in cards.items():
-    ...
-    if set(card) < {"id", "title", "details"}:
-        raise ValueError("AI board cards require id, title, and details fields.")
-```
+- **`validate_ai_board_update` returns `{}` for `None` input** (line 116): When `board_update is None`, the function returns `{}` (empty dict). Back in `main.py:74`, the check `if parsed.get("board_update") is not None` evaluates to `True` (because `{}` is not `None`), causing `replace_board_state` to be called with an empty dict. This dict passes `validate_board_state` in `db.py` but represents an empty board — columns and cards would both be empty lists/dicts, wiping the board. This is a **bug**: a `None` board_update should not trigger a replacement. The fix: return `None` instead of `{}` on line 116, or change the check in `main.py` to `if parsed.get("board_update")`.
+- **Hand-rolled `.env` loader** (lines 18-28): `load_env()` parses `.env` files manually. It does not handle quoted values containing `=`, multi-line values, or `export` prefixes. This works for the single-key case but is fragile. The `setdefault` call also means environment variables set before the call take precedence, which is correct but undocumented.
+- **No conversation truncation** (line 98-111): `build_board_prompt` includes the full conversation history in every request. As conversations grow, this will eventually exceed the model's context window. A truncation strategy (last N messages or token limit) is needed.
+- **AI prompt includes full board JSON** (line 107): Every AI call sends the entire board state serialized as JSON in the prompt. For large boards this wastes tokens. A more efficient approach would be to describe only the relevant columns/cards.
+- **Single API key** (line 33): The OpenRouter API key is loaded from `.env` at request time via `load_env()`. This means every API call re-reads the `.env` file from disk. The key should be loaded once at startup and cached.
+- **`normalize_ai_prompt` only handles `+`** (lines 39-43): The regex normalization for arithmetic only handles `+` operators. This is only used by the `/api/ai/test` smoke test endpoint and is not a concern for production use.
 
-The intent is "reject a card that is missing a required field." `set(card)
-< {"id","title","details"}` is a *proper subset* test, which only catches
-the case where `card`'s keys are entirely a subset of the three required
-keys. If the AI response includes any extra/unexpected key (e.g. an
-`"assignee"` field a model hallucinates), `set(card)` is no longer a subset
-at all, so the condition is `False` and a card missing `"details"` (or
-`"title"`) passes validation silently. The correct check is "required keys
-are a subset of the card's keys": `if not {"id", "title",
-"details"}.issubset(card):`.
+## Frontend
 
-In practice this is masked today because `replace_board_state()` later runs
-the stricter `validate_board_state()`, which independently checks `id` and
-`title`, and defaults a missing `details` to `""` — so nothing crashes. But
-the AI-specific validation layer is silently broken and gives false
-assurance that malformed AI payloads are being rejected at that stage.
+### `page.tsx` (106 lines)
 
-**Proposed action:** Fix the check to
-`if not {"id", "title", "details"}.issubset(card):`.
+**Good**: Clean auth gate pattern. The form uses proper `<label>` associations and `autoComplete` attributes for accessibility.
 
-## 4. `data/pm.db` is committed to the git repository — FIXED
+**Issues**:
 
-**File:** `data/pm.db` (tracked), `.gitignore` (no `data/` entry)
+- **Client-side-only authentication** (line 18): Credentials are checked in JavaScript against hardcoded constants. The password is visible in the source code (viewable via browser DevTools). Any user can bypass auth by calling the API directly with `?user=user` — the backend has no auth middleware. This is acceptable for the MVP per requirements, but the README should document this limitation.
+- **No session management**: Authentication state is held in React state only. A page refresh logs the user out. The test at `KanbanBoard.test.tsx:211` (login, add card, logout, login, verify card) passes because the mock server persists data, but in the real app the user would need to re-authenticate after refresh. This is acceptable for MVP.
 
-```
-$ git ls-files data/
-data/pm.db
-```
+### `KanbanBoard.tsx` (401 lines)
 
-The live SQLite database — including the seeded `users` row
-(`username=user, password_hash=password`) — is checked into version
-control. Every local run mutates this file, so it will show up as a dirty
-tracked file after any manual testing, get committed by accident, and bloat
-repo history with binary diffs. It also means "creating a new db if it
-doesn't exist" (per `AGENTS.md`) is undermined — the repo ships with a
-pre-existing one.
+**Good**: The debounced single-flight save pattern (lines 74-146) is well-designed. Using refs for `pendingBoardRef` and `isSavingRef` avoids stale closure issues. The flush-on-unmount cleanup prevents lost saves. The AI chat integration is clean — send prompt + history, apply returned board directly.
 
-**Proposed action:** Add `data/` (or `data/*.db`) to `.gitignore` and
-`git rm --cached data/pm.db`.
+**Issues**:
 
-## 5. Every keystroke triggers a full board rewrite — FIXED
+- **Component is too large** (401 lines): This component handles board loading, board saving, drag-and-drop, column renaming, card creation, card deletion, and AI chat. It should be split into smaller components or a custom hook (e.g., `useBoardPersistence`, `useAiChat`).
+- **No confirmation for card deletion** (line 208-225): `handleDeleteCard` removes the card immediately with no undo or confirmation dialog. A misclick permanently loses the card.
+- **AI chat error message is generic** (line 266-268): The catch block shows "I couldn't process that request. Please try again." for all errors, including network failures and 400/503 responses. The actual error message from the server is discarded.
+- **No Enter-to-send** for AI chat: The textarea (line 379) does not handle Enter key submission. Users must click the Send button.
+- **`cardsById` memo is unnecessary** (line 154): `useMemo(() => board.cards, [board.cards])` creates a new reference every time `board` changes, providing no memoization benefit. It could be removed since `board.cards` is already used directly.
+- **Chat history grows unbounded**: `chatMessages` state accumulates every message. Combined with the backend's lack of conversation truncation, this will eventually cause performance issues.
+- **Race condition between AI board update and manual save**: If the user makes a manual edit and then receives an AI board update, the AI response replaces the board entirely via `setBoard(data.board)` (line 262). Any manual changes made between the AI request and response are lost. The single-flight save pattern does not protect against this because the AI update bypasses the save queue.
 
-**File:** `frontend/src/components/KanbanBoard.tsx:71-103`,
-`frontend/src/components/KanbanColumn.tsx:45-50`
+### `kanban.ts` (171 lines)
 
-The column-title `<input>` calls `onRename` on every `onChange`, which
-updates `board` state, which re-triggers the save effect (no debounce).
-Each save is a full `PUT /api/board` that server-side does a `DELETE` +
-re-`INSERT` of every column and card row for that board
-(`backend/app/main.py:399-432`). Renaming a column to a 15-character title
-fires ~15 full board round-trips and 15 full table rewrites, and widens the
-race window described in finding 1.
+**Good**: The `moveCard` function handles all edge cases: same-column reorder, cross-column move, drop onto empty column, and drop onto column placeholder. The `-empty` suffix convention for column drop zones is a clean abstraction.
 
-**Proposed action:** Debounce the save effect (e.g. 300-500ms of
-inactivity) in addition to the sequencing fix in finding 1.
+**Issues**:
 
-## 6. `password_hash` is a misleadingly-named, unused, plaintext column
+- **`createId` collision risk** (lines 167-171): Uses `Math.random()` combined with `Date.now()`. While collisions are unlikely in practice, `crypto.randomUUID()` (available in modern browsers and Node.js) would be deterministic and collision-free.
+- **Duplicated initial data**: `initialData` here must stay in sync with `DEFAULT_COLUMNS` and `DEFAULT_CARDS` in `db.py`. Any change to one must be manually mirrored in the other.
 
-**File:** `backend/app/main.py:213-219`, `258-260`;
-`frontend/src/app/page.tsx:6-7`
+### `KanbanColumn.tsx` (74 lines)
 
-```python
-connection.execute(
-    "INSERT OR IGNORE INTO users (username, password_hash) VALUES (?, ?)",
-    ("user", "password"),
-)
-```
+**Good**: Clean component with proper `useDroppable` integration. The empty column state is a nice UX touch.
 
-The column is named `password_hash` but stores the literal plaintext
-string `"password"`. No backend endpoint ever reads or verifies this
-column — there is no login route. The frontend's actual login gate
-(`page.tsx`) checks a completely separate hardcoded pair,
-`VALID_USERNAME`/`VALID_PASSWORD`, entirely client-side, disconnected from
-this DB value. The column is dead weight today, and its name would mislead
-a future contributor into thinking a real hash is being verified somewhere.
+**Minor**: The column title `<input>` (line 45) has no blur handler or keyboard shortcut to confirm the edit. Every keystroke triggers a board update via `onRename`. This works because of the debounced save, but a confirm-on-blur pattern would be more conventional.
 
-**Proposed action:** Either wire it up to actual verification (hash with
-e.g. `passlib`/`hashlib` + a real login endpoint) or, while it stays
-unused, rename the column to `password` and note in `docs/DATABASE.md`
-that it is currently unused scaffolding for future multi-user auth.
+### `KanbanCard.tsx` (53 lines)
 
-## 7. `@app.on_event("startup")` is a deprecated FastAPI API
+**Good**: Clean sortable card with proper accessibility attributes. The delete button has a descriptive `aria-label`.
 
-**File:** `backend/app/main.py:435-437`
+**Issue**: No confirmation before deletion. See `KanbanBoard.tsx` note above.
 
-```python
-@app.on_event("startup")
-async def startup_event() -> None:
-    init_db()
-```
+### `NewCardForm.tsx` (75 lines)
 
-`requirements.txt` pins `fastapi>=0.115.0`. Since FastAPI 0.93,
-`on_event` is deprecated in favor of the `lifespan` context-manager
-parameter to `FastAPI(...)`, and modern FastAPI emits a deprecation
-warning for it. This violates the project's own stated convention:
+**Good**: Simple, focused component. Proper form validation (requires non-empty title). Reset on cancel and submit.
 
-> `CLAUDE.md` (Working conventions): "Use current/idiomatic library
-> versions and patterns."
-> `AGENTS.md` (Coding standards): "Use latest versions of libraries and
-> idiomatic approaches as of today."
+**Minor**: The form could benefit from auto-focusing the title input when opened.
 
-**Proposed action:** Replace with a `lifespan` async context manager:
+### Styling
 
-```python
-from contextlib import asynccontextmanager
+**Good**: Consistent use of CSS custom properties for theming. The color scheme from `AGENTS.md` is faithfully implemented. Tailwind CSS v4 is used idiomatically. The glassmorphism header (`backdrop-blur`, `bg-white/80`) is visually polished.
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    init_db()
-    yield
+**Issue**: The `globals.css` imports Tailwind via `@import "tailwindcss"` which is the Tailwind v4 syntax. This is correct for the installed version.
 
-app = FastAPI(title="PM MVP Backend", lifespan=lifespan)
-```
+## Security
 
----
+| Issue | Severity | Location | Notes |
+|-------|----------|----------|-------|
+| Plaintext password in DB | High | `db.py:100` | Column named `password_hash` but stores plaintext |
+| Client-side auth only | Medium | `page.tsx:18` | Backend has no auth middleware |
+| No API rate limiting | Medium | All routes | AI endpoints can be abused to exhaust API quota |
+| Prompt injection | Medium | `ai.py:98-111` | User input embedded directly in system prompt |
+| No CSRF protection | Low | All POST/PUT | Acceptable for API-only backend |
 
-## Summary table
+## Testing
 
-| # | Severity | File | Issue | Status |
-|---|----------|------|-------|--------|
-| 1 | High | `frontend/src/components/KanbanBoard.tsx` | Unserialized autosave can persist a stale board (silent data loss) | Fixed |
-| 2 | High | `backend/app/main.py` | SQLite connections never closed (resource leak) | Fixed |
-| 3 | Medium | `backend/app/main.py` | Wrong subset check lets malformed AI cards through validation | Fixed |
-| 4 | Medium | `data/pm.db` | Live database file committed to git | Fixed |
-| 5 | Medium | `frontend/src/components/KanbanBoard.tsx` | No debounce — full board rewrite per keystroke | Fixed |
-| 6 | Low | `backend/app/main.py:213-219,258-260` | `password_hash` is unused, plaintext, and misleadingly named | Open |
-| 7 | Low | `backend/app/main.py:435-437` | Deprecated `on_event("startup")` instead of `lifespan` | Open |
+### Backend Tests
 
-## Fix notes (findings 1-5)
+**Good**: 9 tests covering board CRUD, validation, AI endpoints, and error handling. Test isolation via `monkeypatch` redirecting DB to `tmp_path` is clean. AI calls are properly stubbed.
 
-- **1 & 5 (autosave race + no debounce):** Replaced the per-change
-  `saveSequenceRef` counter with a single-flight save queue: every board
-  change updates `pendingBoardRef` immediately, but the actual `PUT` is
-  debounced 400ms and only one save can be in flight at a time (`isSavingRef`).
-  If a change arrives while a save is running, it's picked up automatically
-  once that save finishes, so the request sent is always the latest board and
-  requests can never complete out of order. A save is also flushed
-  immediately on unmount (e.g. logout) so in-progress edits aren't lost to
-  the debounce timer being cleared — this is covered by the existing
-  "keeps the board state after logout and login" test.
-- **2 (unclosed connections):** `get_connection()` is now a
-  `@contextmanager` that commits (or rolls back on exception) and always
-  calls `connection.close()` in a `finally` block. Call sites are unchanged.
-- **3 (wrong subset check):** `set(card) < {...}` → `not {...}.issubset(card)`.
-- **4 (db committed to git):** Added `data/*.db` to `.gitignore` and ran
-  `git rm --cached data/pm.db` (file kept locally, untracked going forward).
+**Gaps**:
+- No tests for `validate_ai_board_update` in isolation
+- No test for the `None` board_update bug (line 116 of `ai.py`)
+- No test for concurrent board updates
+- No test for large board payloads
 
-Verified with: `python3 -m pytest backend/tests -q` (10 passed),
-`npm run test:unit` (16 passed), `npm run lint` (clean), `npm run build`
-(succeeds, no TypeScript errors).
+### Frontend Tests
+
+**Good**: 12 unit tests covering board load/save, rapid update deduplication, column operations, card CRUD, AI chat flow, and full auth flow. The mock server pattern (lines 15-24 of `KanbanBoard.test.tsx`) is well-designed.
+
+**Gaps**:
+- No tests for `KanbanCard`, `KanbanColumn`, or `NewCardForm` in isolation
+- No tests for drag-and-drop behavior (only the result is tested)
+- No edge case tests for `moveCard` (e.g., dropping a card onto itself)
+
+### E2E Tests
+
+**Good**: 5 Playwright tests covering the critical path: sign-in, board load, card add, drag-and-drop, and column rename persistence.
+
+**Gap**: No tests for AI chat flow in E2E.
+
+## Docker
+
+**Good**: Two-stage build keeps the final image small (Node for build only, Python for runtime). `uv` for fast dependency installation. `PYTHONDONTWRITEBYTECODE=1` and `PYTHONUNBUFFERED=1` are set correctly.
+
+**Issues**:
+- **No health check**: The Dockerfile has no `HEALTHCHECK` instruction. Adding `HEALTHCHECK CMD curl -f http://localhost:8000/api/health` would improve container orchestration.
+- **No `.dockerignore`**: The build context includes `node_modules/`, `data/`, `.git/`, and other unnecessary files. A `.dockerignore` would speed up builds.
+- **`npm install` instead of `npm ci`** (line 6): `npm install` can modify `package-lock.json` in the Docker build. `npm ci` is the correct choice for reproducible builds.
+
+## Positive Observations
+
+1. **Save deduplication pattern**: The single-flight, debounced save with pending queue is a well-engineered solution to a common real-time sync problem. It prevents race conditions without complex state management.
+
+2. **Validation depth**: Both frontend and backend validate board state thoroughly. The backend checks for duplicate IDs, orphaned cards, missing references, and type correctness.
+
+3. **Test isolation**: Backend tests use `tmp_path` + `monkeypatch` for database isolation. Frontend tests mock `fetch` globally with a controllable `serverBoard` variable. Both patterns are clean and reliable.
+
+4. **Code organization**: The backend is split into three focused modules (`main`, `db`, `ai`) with clear responsibilities. The frontend follows a standard Next.js layout with components, lib, and tests.
+
+5. **Consistent coding style**: Both Python and TypeScript code follow consistent formatting, naming conventions, and import ordering throughout the project.
+
+## Recommendations
+
+### Priority 1 — Must Fix
+
+1. **Fix the `None` board_update bug** in `ai.py:116`. Change `return {}` to `return None`, or change the check in `main.py:74` to `if parsed.get("board_update")`. Without this fix, an AI response without a `board_update` field could wipe the board.
+
+2. **Add `.dockerignore`** excluding `node_modules/`, `data/`, `.git/`, `frontend/out/`, `*.db`.
+
+### Priority 2 — Should Fix
+
+3. **Split `KanbanBoard.tsx`** into smaller components or custom hooks. The 401-line component handles too many concerns.
+
+4. **Add card deletion confirmation** — a simple `confirm()` dialog or inline undo toast.
+
+5. **Add conversation history truncation** in `build_board_prompt` to prevent exceeding the model's context window.
+
+6. **Use Pydantic models** for API request/response types in `main.py` instead of manual dict checks.
+
+7. **Replace `npm install` with `npm ci`** in the Dockerfile for reproducible builds.
+
+### Priority 3 — Nice to Have
+
+8. **Add a `HEALTHCHECK`** instruction to the Dockerfile.
+
+9. **Add indexes** on `board_cards(board_id)` and `board_cards(column_id)` for future scalability.
+
+10. **Replace `Math.random()` in `createId`** with `crypto.randomUUID()` for guaranteed uniqueness.
+
+11. **Cache the OpenRouter API key** at startup instead of re-reading `.env` on every request.
+
+12. **Add a `.dockerignore`** file.
+
+13. **Deduplicate initial data** between `kanban.ts` and `db.py` (e.g., share a JSON file).
+
+14. **Add Enter-to-send** for the AI chat textarea.
