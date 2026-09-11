@@ -3,14 +3,14 @@ import json
 from fastapi.testclient import TestClient
 import pytest
 
-from backend.app import main
+from backend.app import ai, db, main
 
 
 @pytest.fixture(autouse=True)
 def isolated_database(tmp_path, monkeypatch):
-    monkeypatch.setattr(main, "DB_DIR", tmp_path)
-    monkeypatch.setattr(main, "DB_PATH", tmp_path / "pm.db")
-    main.init_db()
+    monkeypatch.setattr(db, "DB_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "pm.db")
+    db.init_db()
 
 
 app = main.app
@@ -106,7 +106,7 @@ def test_ai_test_endpoint_returns_model_response(monkeypatch) -> None:
         assert prompt == "2 + 2"
         return "4"
 
-    monkeypatch.setattr(main, "call_openrouter", fake_call_openrouter)
+    monkeypatch.setattr(ai, "call_openrouter", fake_call_openrouter)
 
     client = TestClient(app)
     response = client.get("/api/ai/test?prompt=2+2")
@@ -115,14 +115,14 @@ def test_ai_test_endpoint_returns_model_response(monkeypatch) -> None:
     payload = response.json()
     assert payload["ok"] is True
     assert payload["response"] == "4"
-    assert payload["model"] == main.OPENROUTER_MODEL
+    assert payload["model"] == ai.OPENROUTER_MODEL
 
 
 def test_ai_test_endpoint_reports_actionable_errors(monkeypatch) -> None:
     def fake_call_openrouter(prompt: str) -> str:
         raise RuntimeError("OPENROUTER_API_KEY is missing. Add it to the project .env file.")
 
-    monkeypatch.setattr(main, "call_openrouter", fake_call_openrouter)
+    monkeypatch.setattr(ai, "call_openrouter", fake_call_openrouter)
 
     client = TestClient(app)
     response = client.get("/api/ai/test?prompt=2+2")
@@ -160,7 +160,7 @@ def test_ai_board_endpoint_accepts_valid_structured_response(monkeypatch) -> Non
             }
         )
 
-    monkeypatch.setattr(main, "call_openrouter", fake_call_openrouter)
+    monkeypatch.setattr(ai, "call_openrouter", fake_call_openrouter)
 
     client = TestClient(app)
     response = client.post(
@@ -181,7 +181,7 @@ def test_ai_board_endpoint_accepts_valid_structured_response(monkeypatch) -> Non
 
 
 def test_ai_board_endpoint_rejects_malformed_structured_response(monkeypatch) -> None:
-    monkeypatch.setattr(main, "call_openrouter", lambda prompt: '{"response": 123}')
+    monkeypatch.setattr(ai, "call_openrouter", lambda prompt: '{"response": 123}')
 
     client = TestClient(app)
     response = client.post("/api/ai/board?user=user", json={"prompt": "Rename the column."})

@@ -29,7 +29,10 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
   const [isLoaded, setIsLoaded] = useState(false);
   const [error, setError] = useState("");
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
-  const saveSequenceRef = useRef(0);
+  const pendingBoardRef = useRef<BoardData | null>(null);
+  const isSavingRef = useRef(false);
+  const saveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushSaveRef = useRef<() => void>(() => {});
   const [aiInput, setAiInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     { role: "assistant", content: "Hi! Ask me to rename a column, create a card, or update the board." },
@@ -73,19 +76,30 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
       return;
     }
 
-    const saveId = ++saveSequenceRef.current;
-    const saveBoard = async () => {
+    // Always track the latest board to save. A single in-flight save loop
+    // (below) drains this ref, so an older request can never complete after
+    // and overwrite a newer one.
+    pendingBoardRef.current = board;
+
+    const flushSave = async () => {
+      if (isSavingRef.current) {
+        return;
+      }
+      const boardToSave = pendingBoardRef.current;
+      if (boardToSave === null) {
+        return;
+      }
+
+      isSavingRef.current = true;
+      pendingBoardRef.current = null;
+
       try {
         const response = await fetch(`/api/board?user=${encodeURIComponent(username)}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(board),
+          body: JSON.stringify(boardToSave),
           keepalive: true,
         });
-
-        if (saveId !== saveSequenceRef.current) {
-          return;
-        }
 
         if (!response.ok) {
           throw new Error("Unable to save the board.");
@@ -93,14 +107,43 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
 
         setError("");
       } catch {
-        if (saveId === saveSequenceRef.current) {
-          setError("Unable to save the board to the server.");
+        setError("Unable to save the board to the server.");
+      } finally {
+        isSavingRef.current = false;
+        // Another change arrived while this save was in flight; send it now.
+        if (pendingBoardRef.current !== null) {
+          void flushSave();
         }
       }
     };
 
-    void saveBoard();
+    flushSaveRef.current = () => {
+      void flushSave();
+    };
+
+    if (saveDebounceRef.current) {
+      clearTimeout(saveDebounceRef.current);
+    }
+    saveDebounceRef.current = setTimeout(() => {
+      void flushSave();
+    }, 400);
+
+    return () => {
+      if (saveDebounceRef.current) {
+        clearTimeout(saveDebounceRef.current);
+      }
+    };
   }, [board, isLoaded, username]);
+
+  // Flush any unsaved change immediately when the board unmounts (e.g. on
+  // logout), instead of losing it to the debounce timer being cleared.
+  useEffect(() => {
+    return () => {
+      if (pendingBoardRef.current !== null) {
+        flushSaveRef.current();
+      }
+    };
+  }, []);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
