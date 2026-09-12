@@ -21,22 +21,17 @@ DB_DIR = BASE_DIR / "data"
 DB_PATH = DB_DIR / "pm.db"
 
 DEFAULT_COLUMNS = [
-    {"id": "col-backlog", "title": "Backlog", "cardIds": ["card-1", "card-2"]},
-    {"id": "col-discovery", "title": "Discovery", "cardIds": ["card-3"]},
-    {"id": "col-progress", "title": "In Progress", "cardIds": ["card-4", "card-5"]},
-    {"id": "col-review", "title": "Review", "cardIds": ["card-6"]},
-    {"id": "col-done", "title": "Done", "cardIds": ["card-7", "card-8"]},
+    {"id": "col-backlog", "title": "Backlog", "cardIds": ["card-1"]},
+    {"id": "col-discovery", "title": "Discovery", "cardIds": []},
+    {"id": "col-progress", "title": "In Progress", "cardIds": ["card-2"]},
+    {"id": "col-review", "title": "Review", "cardIds": []},
+    {"id": "col-done", "title": "Done", "cardIds": ["card-3"]},
 ]
 
 DEFAULT_CARDS = {
-    "card-1": {"id": "card-1", "title": "Align roadmap themes", "details": "Draft quarterly themes with impact statements and metrics."},
-    "card-2": {"id": "card-2", "title": "Gather customer signals", "details": "Review support tags, sales notes, and churn feedback."},
-    "card-3": {"id": "card-3", "title": "Prototype analytics view", "details": "Sketch initial dashboard layout and key drill-downs."},
-    "card-4": {"id": "card-4", "title": "Refine status language", "details": "Standardize column labels and tone across the board."},
-    "card-5": {"id": "card-5", "title": "Design card layout", "details": "Add hierarchy and spacing for scanning dense lists."},
-    "card-6": {"id": "card-6", "title": "QA micro-interactions", "details": "Verify hover, focus, and loading states."},
-    "card-7": {"id": "card-7", "title": "Ship marketing page", "details": "Final copy approved and asset pack delivered."},
-    "card-8": {"id": "card-8", "title": "Close onboarding sprint", "details": "Document release notes and share internally."},
+    "card-1": {"id": "card-1", "title": "Example card: Align roadmap themes", "details": "This is an example card to show how the board works. Draft quarterly themes with impact statements and metrics."},
+    "card-2": {"id": "card-2", "title": "Example card: Refine status language", "details": "This is an example card to show how the board works. Standardize column labels and tone across the board."},
+    "card-3": {"id": "card-3", "title": "Example card: Ship marketing page", "details": "This is an example card to show how the board works. Final copy approved and asset pack delivered."},
 }
 
 
@@ -198,7 +193,9 @@ def get_user_id(username: str) -> int:
     return user["id"]
 
 
-def _seed_default_board(connection: sqlite3.Connection, user_id: int, name: str) -> int:
+def _seed_default_board(
+    connection: sqlite3.Connection, user_id: int, name: str, include_example_cards: bool = True
+) -> int:
     cursor = connection.execute(
         "INSERT INTO boards (user_id, name) VALUES (?, ?)",
         (user_id, name),
@@ -210,6 +207,8 @@ def _seed_default_board(connection: sqlite3.Connection, user_id: int, name: str)
             "INSERT INTO board_columns (id, board_id, title, position) VALUES (?, ?, ?, ?)",
             (f"{column['id']}-{board_id}", board_id, column["title"], index),
         )
+        if not include_example_cards:
+            continue
         for card_index, card_id in enumerate(column["cardIds"]):
             card = DEFAULT_CARDS[card_id]
             connection.execute(
@@ -244,7 +243,7 @@ def create_board(user_id: int, name: str) -> dict[str, Any]:
         raise ValueError("Board name must not be empty.")
 
     with get_connection() as connection:
-        board_id = _seed_default_board(connection, user_id, name)
+        board_id = _seed_default_board(connection, user_id, name, include_example_cards=False)
         connection.commit()
         board = connection.execute(
             "SELECT id, name, created_at, updated_at FROM boards WHERE id = ?",
