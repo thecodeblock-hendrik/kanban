@@ -58,11 +58,13 @@ Fields:
 - column_id
 - title
 - details
+- due_date (nullable ISO date string, e.g. `2026-01-15`)
+- priority (`low` | `medium` | `high`, default `medium`)
 - position
 - created_at
 - updated_at
 
-Card movement is represented by updating `column_id` and `position`.
+Card movement is represented by updating `column_id` and `position`. `due_date`/`priority` are optional on write (defaulting to `null`/`medium`) so older payloads without them remain valid.
 
 ## Default board layout
 

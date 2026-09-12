@@ -2,21 +2,29 @@ import clsx from "clsx";
 import { useDroppable } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { LayoutGrid } from "lucide-react";
-import type { Card, Column } from "@/lib/kanban";
+import type { Card, Column, Priority } from "@/lib/kanban";
 import { KanbanCard } from "@/components/KanbanCard";
 import { NewCardForm } from "@/components/NewCardForm";
 
 type KanbanColumnProps = {
   column: Column;
   cards: Card[];
+  totalCardCount: number;
   onRename: (columnId: string, title: string) => void;
-  onAddCard: (columnId: string, title: string, details: string) => void;
+  onAddCard: (
+    columnId: string,
+    title: string,
+    details: string,
+    priority: Priority,
+    dueDate: string | null
+  ) => void;
   onDeleteCard: (columnId: string, cardId: string) => void;
 };
 
 export const KanbanColumn = ({
   column,
   cards,
+  totalCardCount,
   onRename,
   onAddCard,
   onDeleteCard,
@@ -44,11 +52,11 @@ export const KanbanColumn = ({
         />
         <span className="flex shrink-0 items-center gap-1 rounded-full bg-[var(--surface)] px-2 py-0.5 text-[11px] font-semibold text-[var(--gray-text)]">
           <LayoutGrid size={11} strokeWidth={2.5} />
-          {cards.length}
+          {cards.length === totalCardCount ? cards.length : `${cards.length} / ${totalCardCount}`}
         </span>
       </div>
       <div className="mt-3 flex flex-1 flex-col gap-2 overflow-y-auto">
-        <SortableContext items={column.cardIds} strategy={verticalListSortingStrategy}>
+        <SortableContext items={cards.map((card) => card.id)} strategy={verticalListSortingStrategy}>
           {cards.map((card) => (
             <KanbanCard
               key={card.id}
@@ -59,12 +67,14 @@ export const KanbanColumn = ({
         </SortableContext>
         {cards.length === 0 && (
           <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-[var(--stroke)] px-3 py-6 text-center text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
-            Drop a card here
+            {totalCardCount === 0 ? "Drop a card here" : "No cards match the filter"}
           </div>
         )}
       </div>
       <NewCardForm
-        onAdd={(title, details) => onAddCard(column.id, title, details)}
+        onAdd={(title, details, priority, dueDate) =>
+          onAddCard(column.id, title, details, priority, dueDate)
+        }
       />
     </section>
   );

@@ -1,7 +1,11 @@
+export type Priority = "low" | "medium" | "high";
+
 export type Card = {
   id: string;
   title: string;
   details: string;
+  dueDate?: string | null;
+  priority?: Priority;
 };
 
 export type Column = {
@@ -169,3 +173,46 @@ export const createId = (prefix: string) => {
   const timePart = Date.now().toString(36);
   return `${prefix}-${randomPart}${timePart}`;
 };
+
+export const isOverdue = (card: Card, today: Date = new Date()): boolean => {
+  if (!card.dueDate) {
+    return false;
+  }
+  const due = new Date(`${card.dueDate}T23:59:59`);
+  return due.getTime() < today.getTime();
+};
+
+export type BoardFilter = {
+  text: string;
+  priority: Priority | "all";
+  overdueOnly: boolean;
+};
+
+export const defaultFilter: BoardFilter = {
+  text: "",
+  priority: "all",
+  overdueOnly: false,
+};
+
+export const cardMatchesFilter = (card: Card, filter: BoardFilter, today: Date = new Date()): boolean => {
+  const normalizedText = filter.text.trim().toLowerCase();
+  if (normalizedText) {
+    const haystack = `${card.title} ${card.details}`.toLowerCase();
+    if (!haystack.includes(normalizedText)) {
+      return false;
+    }
+  }
+
+  if (filter.priority !== "all" && (card.priority ?? "medium") !== filter.priority) {
+    return false;
+  }
+
+  if (filter.overdueOnly && !isOverdue(card, today)) {
+    return false;
+  }
+
+  return true;
+};
+
+export const isFilterActive = (filter: BoardFilter): boolean =>
+  filter.text.trim().length > 0 || filter.priority !== "all" || filter.overdueOnly;

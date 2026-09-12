@@ -221,6 +221,41 @@ describe("KanbanBoard", () => {
     expect(within(column).queryByText("New card")).not.toBeInTheDocument();
   });
 
+  it("sets a due date and priority when adding a card, and shows them on the card", async () => {
+    render(<KanbanBoard {...kanbanBoardProps()} />);
+    await screen.findByDisplayValue("Backlog");
+    const column = getFirstColumn();
+
+    await userEvent.click(within(column).getByRole("button", { name: /add a card/i }));
+    await userEvent.type(within(column).getByPlaceholderText(/card title/i), "Ship report");
+    await userEvent.type(within(column).getByLabelText(/due date/i), "2020-01-01");
+    await userEvent.selectOptions(within(column).getByLabelText(/priority/i), "high");
+    await userEvent.click(within(column).getByRole("button", { name: /add card/i }));
+
+    const card = within(column).getByText("Ship report").closest("article");
+    expect(card).not.toBeNull();
+    expect(within(card as HTMLElement).getByText("high")).toBeInTheDocument();
+    expect(within(card as HTMLElement).getByText(/2020-01-01/)).toBeInTheDocument();
+    expect(within(card as HTMLElement).getByText(/overdue/i)).toBeInTheDocument();
+  });
+
+  it("filters cards by search text and priority", async () => {
+    render(<KanbanBoard {...kanbanBoardProps()} />);
+    await screen.findByDisplayValue("Backlog");
+    const column = getFirstColumn();
+
+    expect(within(column).getByText("Align roadmap themes")).toBeInTheDocument();
+    expect(within(column).getByText("Gather customer signals")).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText(/search cards/i), "roadmap");
+
+    expect(within(column).getByText("Align roadmap themes")).toBeInTheDocument();
+    expect(within(column).queryByText("Gather customer signals")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /clear filters/i }));
+    expect(within(column).getByText("Gather customer signals")).toBeInTheDocument();
+  });
+
   it("sends a chat message to the AI and refreshes the board after a valid AI update", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
     fetchMock.mockImplementation(async (input, init) => {

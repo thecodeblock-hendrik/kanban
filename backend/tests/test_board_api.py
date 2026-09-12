@@ -361,3 +361,75 @@ def test_user_cannot_rename_or_delete_another_users_board() -> None:
 
     delete_response = client.delete(f"/api/boards/{bob_board_id}?user=user")
     assert delete_response.status_code == 404
+
+
+# --- Card metadata (due date, priority) ---
+
+
+def test_default_cards_have_medium_priority_and_no_due_date() -> None:
+    client = TestClient(app)
+    board = _get_board(client)["board"]
+
+    for card in board["cards"].values():
+        assert card["priority"] == "medium"
+        assert card["dueDate"] is None
+
+
+def test_card_due_date_and_priority_round_trip_through_save_and_load() -> None:
+    client = TestClient(app)
+    initial = _get_board(client)
+    board_id = initial["boardId"]
+    board = initial["board"]
+    card_id = board["columns"][0]["cardIds"][0]
+
+    board["cards"][card_id]["priority"] = "high"
+    board["cards"][card_id]["dueDate"] = "2026-01-15"
+
+    response = client.put(f"/api/board?user=user&boardId={board_id}", json=board)
+    assert response.status_code == 200
+
+    reloaded = _get_board(client)["board"]
+    assert reloaded["cards"][card_id]["priority"] == "high"
+    assert reloaded["cards"][card_id]["dueDate"] == "2026-01-15"
+
+
+def test_card_without_due_date_or_priority_defaults_on_save() -> None:
+    client = TestClient(app)
+    initial = _get_board(client)
+    board_id = initial["boardId"]
+    board = initial["board"]
+    card_id = board["columns"][0]["cardIds"][0]
+
+    del board["cards"][card_id]["priority"]
+    del board["cards"][card_id]["dueDate"]
+
+    response = client.put(f"/api/board?user=user&boardId={board_id}", json=board)
+    assert response.status_code == 200
+    assert response.json()["board"]["cards"][card_id]["priority"] == "medium"
+    assert response.json()["board"]["cards"][card_id]["dueDate"] is None
+
+
+def test_invalid_card_priority_is_rejected() -> None:
+    client = TestClient(app)
+    initial = _get_board(client)
+    board_id = initial["boardId"]
+    board = initial["board"]
+    card_id = board["columns"][0]["cardIds"][0]
+    board["cards"][card_id]["priority"] = "urgent"
+
+    response = client.put(f"/api/board?user=user&boardId={board_id}", json=board)
+    assert response.status_code == 400
+    assert "priority" in response.json()["detail"].lower()
+
+
+def test_invalid_card_due_date_type_is_rejected() -> None:
+    client = TestClient(app)
+    initial = _get_board(client)
+    board_id = initial["boardId"]
+    board = initial["board"]
+    card_id = board["columns"][0]["cardIds"][0]
+    board["cards"][card_id]["dueDate"] = 12345
+
+    response = client.put(f"/api/board?user=user&boardId={board_id}", json=board)
+    assert response.status_code == 400
+    assert "duedate" in response.json()["detail"].lower()

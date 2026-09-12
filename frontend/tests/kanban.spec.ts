@@ -159,3 +159,30 @@ test("creates, renames, switches, and deletes a second board", async ({ page }) 
   await page.getByLabel(`Delete ${boardName}`).click();
   await expect(page.getByRole("button", { name: boardName, exact: true })).toHaveCount(0);
 });
+
+test("sets a card's due date and priority, then filters the board", async ({ page }) => {
+  await page.goto("/");
+  await signIn(page);
+
+  const firstColumn = page.locator('[data-testid^="column-"]').first();
+  await firstColumn.getByRole("button", { name: /add a card/i }).click();
+  await firstColumn.getByPlaceholder("Card title").fill("Overdue task");
+  await firstColumn.getByLabel(/due date/i).fill("2020-01-01");
+  await firstColumn.getByLabel(/priority/i).selectOption("high");
+  await firstColumn.getByRole("button", { name: /add card/i }).click();
+
+  const newCard = firstColumn.getByTestId(/^card-card-/).filter({ hasText: "Overdue task" });
+  await expect(newCard.getByText("high", { exact: true })).toBeVisible();
+  await expect(newCard.getByText("(overdue)")).toBeVisible();
+
+  await page.getByLabel(/search cards/i).fill("Overdue task");
+  await expect(page.getByText("Align roadmap themes")).not.toBeVisible();
+  await expect(firstColumn.getByText("Overdue task")).toBeVisible();
+
+  await page.getByRole("button", { name: /clear filters/i }).click();
+  await expect(page.getByText("Align roadmap themes")).toBeVisible();
+
+  await page.getByRole("checkbox", { name: /overdue only/i }).check();
+  await expect(firstColumn.getByText("Overdue task")).toBeVisible();
+  await expect(page.getByText("Align roadmap themes")).not.toBeVisible();
+});

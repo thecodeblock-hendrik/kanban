@@ -11,11 +11,21 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { Send, Sparkles } from "lucide-react";
+import { Search, Send, Sparkles } from "lucide-react";
 import { KanbanColumn } from "@/components/KanbanColumn";
 import { KanbanCardPreview } from "@/components/KanbanCardPreview";
 import { BoardSwitcher, type BoardSummary } from "@/components/BoardSwitcher";
-import { createId, initialData, moveCard, type BoardData } from "@/lib/kanban";
+import {
+  cardMatchesFilter,
+  createId,
+  defaultFilter,
+  initialData,
+  isFilterActive,
+  moveCard,
+  type BoardData,
+  type BoardFilter,
+  type Priority,
+} from "@/lib/kanban";
 
 type KanbanBoardProps = {
   username: string;
@@ -54,6 +64,7 @@ export const KanbanBoard = ({
     { role: "assistant", content: "Hi! Ask me to rename a column, create a card, or update the board." },
   ]);
   const [isAiLoading, setIsAiLoading] = useState(false);
+  const [filter, setFilter] = useState<BoardFilter>(defaultFilter);
 
   useEffect(() => {
     let isCurrent = true;
@@ -222,13 +233,19 @@ export const KanbanBoard = ({
     }));
   };
 
-  const handleAddCard = (columnId: string, title: string, details: string) => {
+  const handleAddCard = (
+    columnId: string,
+    title: string,
+    details: string,
+    priority: Priority,
+    dueDate: string | null
+  ) => {
     const id = createId("card");
     setBoard((prev) => ({
       ...prev,
       cards: {
         ...prev.cards,
-        [id]: { id, title, details: details || "No details yet." },
+        [id]: { id, title, details: details || "No details yet.", priority, dueDate },
       },
       columns: prev.columns.map((column) =>
         column.id === columnId
@@ -347,6 +364,51 @@ export const KanbanBoard = ({
           </p>
         ) : null}
 
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-[var(--stroke)] bg-white/80 px-4 py-3 shadow-[var(--shadow)] backdrop-blur">
+          <div className="flex min-w-[180px] flex-1 items-center gap-2 rounded-xl border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2">
+            <Search size={14} className="text-[var(--gray-text)]" />
+            <input
+              value={filter.text}
+              onChange={(event) => setFilter((prev) => ({ ...prev, text: event.target.value }))}
+              placeholder="Search cards..."
+              aria-label="Search cards"
+              className="w-full bg-transparent text-sm text-[var(--navy-dark)] outline-none"
+            />
+          </div>
+          <select
+            value={filter.priority}
+            onChange={(event) =>
+              setFilter((prev) => ({ ...prev, priority: event.target.value as Priority | "all" }))
+            }
+            aria-label="Filter by priority"
+            className="rounded-xl border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--navy-dark)] outline-none"
+          >
+            <option value="all">All priorities</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+          <label className="flex items-center gap-2 rounded-xl border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--navy-dark)]">
+            <input
+              type="checkbox"
+              checked={filter.overdueOnly}
+              onChange={(event) =>
+                setFilter((prev) => ({ ...prev, overdueOnly: event.target.checked }))
+              }
+            />
+            Overdue only
+          </label>
+          {isFilterActive(filter) ? (
+            <button
+              type="button"
+              onClick={() => setFilter(defaultFilter)}
+              className="rounded-xl border border-[var(--stroke)] px-3 py-2 text-sm font-semibold text-[var(--primary-blue)] transition hover:border-[var(--primary-blue)]"
+            >
+              Clear filters
+            </button>
+          ) : null}
+        </div>
+
         <div className="grid flex-1 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
           <DndContext
             sensors={sensors}
@@ -355,16 +417,21 @@ export const KanbanBoard = ({
             onDragEnd={handleDragEnd}
           >
             <section className="grid min-w-0 gap-4 [grid-template-columns:repeat(auto-fit,minmax(230px,1fr))]">
-              {board.columns.map((column) => (
-                <KanbanColumn
-                  key={column.id}
-                  column={column}
-                  cards={column.cardIds.map((cardId) => board.cards[cardId])}
-                  onRename={handleRenameColumn}
-                  onAddCard={handleAddCard}
-                  onDeleteCard={handleDeleteCard}
-                />
-              ))}
+              {board.columns.map((column) => {
+                const allCards = column.cardIds.map((cardId) => board.cards[cardId]);
+                const visibleCards = allCards.filter((card) => cardMatchesFilter(card, filter));
+                return (
+                  <KanbanColumn
+                    key={column.id}
+                    column={column}
+                    cards={visibleCards}
+                    totalCardCount={allCards.length}
+                    onRename={handleRenameColumn}
+                    onAddCard={handleAddCard}
+                    onDeleteCard={handleDeleteCard}
+                  />
+                );
+              })}
             </section>
             <DragOverlay>
               {activeCard ? (

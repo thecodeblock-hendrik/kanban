@@ -13,6 +13,8 @@ from fastapi import HTTPException
 PBKDF2_ITERATIONS = 100_000
 DEFAULT_SEED_USERNAME = "user"
 DEFAULT_SEED_PASSWORD = "password"
+VALID_PRIORITIES = {"low", "medium", "high"}
+DEFAULT_PRIORITY = "medium"
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_DIR = BASE_DIR / "data"
@@ -114,12 +116,23 @@ def init_db() -> None:
                 column_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 details TEXT NOT NULL DEFAULT '',
+                due_date TEXT,
+                priority TEXT NOT NULL DEFAULT 'medium',
                 position INTEGER NOT NULL,
                 FOREIGN KEY(board_id) REFERENCES boards(id),
                 FOREIGN KEY(column_id) REFERENCES board_columns(id)
             )
             """
         )
+        card_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(board_cards)").fetchall()
+        }
+        if "due_date" not in card_columns:
+            connection.execute("ALTER TABLE board_cards ADD COLUMN due_date TEXT")
+        if "priority" not in card_columns:
+            connection.execute(
+                f"ALTER TABLE board_cards ADD COLUMN priority TEXT NOT NULL DEFAULT '{DEFAULT_PRIORITY}'"
+            )
         seed_password_hash, seed_salt = hash_password(DEFAULT_SEED_PASSWORD)
         connection.execute(
             "INSERT OR IGNORE INTO users (username, password_hash, salt) VALUES (?, ?, ?)",
@@ -200,8 +213,17 @@ def _seed_default_board(connection: sqlite3.Connection, user_id: int, name: str)
         for card_index, card_id in enumerate(column["cardIds"]):
             card = DEFAULT_CARDS[card_id]
             connection.execute(
-                "INSERT INTO board_cards (id, board_id, column_id, title, details, position) VALUES (?, ?, ?, ?, ?, ?)",
-                (f"{card['id']}-{board_id}", board_id, f"{column['id']}-{board_id}", card["title"], card["details"], card_index),
+                "INSERT INTO board_cards (id, board_id, column_id, title, details, due_date, priority, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"{card['id']}-{board_id}",
+                    board_id,
+                    f"{column['id']}-{board_id}",
+                    card["title"],
+                    card["details"],
+                    None,
+                    DEFAULT_PRIORITY,
+                    card_index,
+                ),
             )
 
     return board_id
@@ -294,7 +316,7 @@ def serialize_board(board_id: int) -> dict[str, Any]:
         ).fetchall()
 
         cards = connection.execute(
-            "SELECT id, column_id, title, details FROM board_cards WHERE board_id = ? ORDER BY position ASC",
+            "SELECT id, column_id, title, details, due_date, priority FROM board_cards WHERE board_id = ? ORDER BY position ASC",
             (board_id,),
         ).fetchall()
 
@@ -304,6 +326,8 @@ def serialize_board(board_id: int) -> dict[str, Any]:
                 "id": card["id"],
                 "title": card["title"],
                 "details": card["details"],
+                "dueDate": card["due_date"],
+                "priority": card["priority"],
             }
 
         column_payload = []
@@ -371,6 +395,10 @@ def validate_board_state(board_state: Any) -> tuple[list[dict[str, Any]], dict[s
             raise ValueError(f"Board card title must be a string: {card_id}")
         if "details" in card and not isinstance(card["details"], str):
             raise ValueError(f"Board card details must be a string: {card_id}")
+        if "dueDate" in card and card["dueDate"] is not None and not isinstance(card["dueDate"], str):
+            raise ValueError(f"Board card dueDate must be a string or null: {card_id}")
+        if "priority" in card and card["priority"] not in VALID_PRIORITIES:
+            raise ValueError(f"Board card priority must be one of {sorted(VALID_PRIORITIES)}: {card_id}")
 
     missing_cards = referenced_card_ids - set(cards)
     if missing_cards:
@@ -405,8 +433,17 @@ def replace_board_state(board_id: int, user_id: int, board_state: dict[str, Any]
                 if card is None:
                     continue
                 connection.execute(
-                    "INSERT INTO board_cards (id, board_id, column_id, title, details, position) VALUES (?, ?, ?, ?, ?, ?)",
-                    (card_id, board_id, column_id, card["title"], card.get("details", ""), position),
+                    "INSERT INTO board_cards (id, board_id, column_id, title, details, due_date, priority, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        card_id,
+                        board_id,
+                        column_id,
+                        card["title"],
+                        card.get("details", ""),
+                        card.get("dueDate"),
+                        card.get("priority", DEFAULT_PRIORITY),
+                        position,
+                    ),
                 )
 
         connection.execute(

@@ -1,12 +1,18 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import clsx from "clsx";
-import { Trash2 } from "lucide-react";
-import type { Card } from "@/lib/kanban";
+import { Calendar, Trash2 } from "lucide-react";
+import { isOverdue, type Card, type Priority } from "@/lib/kanban";
 
 type KanbanCardProps = {
   card: Card;
   onDelete: (cardId: string) => void;
+};
+
+const PRIORITY_STYLES: Record<Priority, string> = {
+  low: "bg-[var(--surface)] text-[var(--gray-text)]",
+  medium: "bg-[var(--primary-blue)]/10 text-[var(--primary-blue)]",
+  high: "bg-[var(--accent-yellow)]/20 text-[#946200]",
 };
 
 export const KanbanCard = ({ card, onDelete }: KanbanCardProps) => {
@@ -17,6 +23,9 @@ export const KanbanCard = ({ card, onDelete }: KanbanCardProps) => {
     transform: CSS.Transform.toString(transform),
     transition,
   };
+
+  const priority = card.priority ?? "medium";
+  const overdue = isOverdue(card);
 
   return (
     <article
@@ -52,6 +61,28 @@ export const KanbanCard = ({ card, onDelete }: KanbanCardProps) => {
           {card.details}
         </p>
       ) : null}
+      <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+        <span
+          className={clsx(
+            "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+            PRIORITY_STYLES[priority]
+          )}
+        >
+          {priority}
+        </span>
+        {card.dueDate ? (
+          <span
+            className={clsx(
+              "flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold",
+              overdue ? "bg-red-50 text-red-600" : "bg-[var(--surface)] text-[var(--gray-text)]"
+            )}
+          >
+            <Calendar size={10} strokeWidth={2.5} />
+            {card.dueDate}
+            {overdue ? " (overdue)" : ""}
+          </span>
+        ) : null}
+      </div>
     </article>
   );
 };

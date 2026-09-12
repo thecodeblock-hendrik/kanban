@@ -356,3 +356,31 @@ Let each user own multiple named Kanban boards instead of exactly one, with a wa
 - [x] All new backend routes have unit test coverage, including ownership/negative cases
 - [x] Frontend integration/e2e tests cover registration, login, board switching, and board CRUD
 - [x] `docs/DATABASE.md` and `CLAUDE.md` are updated to describe the new schema and auth flow
+
+---
+
+## Part 13: Card metadata (due dates, priority) and board search/filter
+
+### Objective
+Move beyond a bare title/details card toward a comprehensive PM tool: let cards carry a due date and a priority, and let a user search/filter the current board by text, priority, and overdue status.
+
+### Checklist
+- [x] Add `due_date` (nullable ISO date string) and `priority` (`low`/`medium`/`high`, default `medium`) columns to `board_cards`, with a migration for existing rows
+- [x] Extend the board serialization contract so `cards[id]` includes `dueDate` and `priority`, and extend `validate_board_state()` to validate them (allow omission for backwards compatibility with existing payloads)
+- [x] Extend `NewCardForm`/card edit UI to set/edit due date and priority
+- [x] Show priority (as a colored badge) and due date (with an overdue indicator) on `KanbanCard`
+- [x] Add a board-level search/filter bar: filter visible cards by title/details text, by priority, and by "overdue only"
+- [x] Add backend tests for the new fields (persistence, validation, defaulting on omission)
+- [x] Add frontend unit tests for card metadata rendering and the filter logic
+- [x] Add an e2e test covering setting a due date/priority and filtering the board
+
+### Tests
+- A card created without due date/priority defaults sensibly and round-trips through save/load
+- A card with a due date in the past renders an overdue indicator
+- Filtering by priority only shows matching cards; clearing the filter restores the full board
+- Existing boards saved before this change still load correctly (no due date/priority is not an error)
+
+### Success criteria
+- [x] Cards can carry a due date and priority end-to-end (create, edit, persist, reload)
+- [x] The board can be filtered/searched without losing any underlying data
+- [x] All new and existing tests pass
