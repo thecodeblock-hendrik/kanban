@@ -63,3 +63,7 @@ User message → `KanbanBoard` posts to `/api/ai/board` with prompt + history �
 - When debugging, find the root cause before attempting a fix — don't guess-and-check.
 - `docs/PLAN.md` gates implementation order; don't build ahead of the approved phase without checking with the user.
 - App color scheme (if touching UI): Accent Yellow `#ecad0a`, Blue Primary `#209dd7`, Purple Secondary `#753991`, Dark Navy `#032147`, Gray Text `#888888`.
+
+## Detailed Plan
+
+@docs/PLAN.md

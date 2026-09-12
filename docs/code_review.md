@@ -2,6 +2,193 @@
 
 Reviewed: 2026-09-11
 
+---
+
+## Follow-up review — 2026-09-12
+
+Full-codebase pass (8 finder angles + 1-vote verification) focused on precision:
+correctness bugs a maintainer would actually act on, plus a few cleanup items
+with strong cross-angle consensus. Findings are ranked most-severe first.
+Items already present in the 2026-09-11 review above are marked as such; one
+of those (`ai.py:116`) is **corrected** below — the original write-up
+identified the wrong trigger condition.
+
+### 1. AI chat replies always overwrite the local board, even when nothing changed
+
+**`frontend/src/components/KanbanBoard.tsx:261-262`**
+
+```ts
+if (data.board) {
+  setBoard(data.board);
+}
+```
+
+Every `POST /api/ai/board` response includes a `board` field — even the
+"no board_update" branch (`backend/app/main.py:79-80`) returns
+`db.serialize_board(board_id)`, a snapshot taken *before* the AI call started.
+`handleAiSubmit` unconditionally replaces state with whatever board came back,
+with no check for local edits made while the request was in flight.
+
+**Failure scenario**: user drags a card (or adds/deletes/renames) while an AI
+reply is pending (AI calls can take several seconds up to the 30s timeout in
+`ai.py:66`). When the reply lands, `setBoard(data.board)` reverts the board to
+its pre-request state, silently discarding the interim edit; the debounced
+save then persists the reverted board. This was previously noted (2026-09-11
+review, `KanbanBoard.tsx` section, "Race condition between AI board update and
+manual save") — confirmed still present, and worse than described there since
+it fires on *every* AI turn, not just ones with a `board_update`.
+
+### 2. AI board_update can silently delete columns/cards it doesn't mention
+
+**`backend/app/db.py:240-273`** (`replace_board_state`) + **`backend/app/ai.py:98-111`** (`build_board_prompt`)
+
+`replace_board_state` always does a full `DELETE FROM board_cards` /
+`DELETE FROM board_columns` for the board, then re-inserts only what's in the
+new `columns`/`cards` payload. `validate_board_state` and
+`validate_ai_board_update` only check the *internal* consistency of the new
+payload (no duplicate ids, no orphans) — neither checks it against the board
+that was actually serialized into the prompt. The prompt itself only says
+`board_update` "should only be included when the user asks for a board
+change" (`ai.py:105`); it never tells the model the update must be the full
+board.
+
+**Failure scenario**: a plausible model completion for "rename the Backlog
+column to Intake" is `{"columns": [{"id": "col-backlog", "title": "Intake",
+"cardIds": [...]}], "cards": {...only backlog cards...}}` — a payload scoped
+to just the touched column. This passes both validators (it's internally
+consistent) and `replace_board_state` deletes every other column and card on
+the board with no error surfaced to the user.
+
+### 3. `board_update: {}` (explicit empty object) causes a spurious 400 — corrects the 2026-09-11 write-up
+
+**`backend/app/ai.py:156-172`**, **`backend/app/main.py:74-78`**
+
+The prior review (line 42 above) says a `None` `board_update` causes
+`replace_board_state` to be called with `{}` and "wipes the board." Re-reading
+the actual code shows the `None` case is handled correctly:
+
+```python
+board_update = payload.get("board_update")          # None if omitted/null
+validated_update = validate_ai_board_update(board_update)   # {} for None input
+return {..., "board_update": validated_update if board_update is not None else None}
+```
+
+When the raw value is `None`, the ternary evaluates to `None`, so
+`main.py:74`'s `if parsed.get("board_update") is not None` is `False` and
+`replace_board_state` is never called. **The real bug is one case over**: if
+the model returns `board_update` as an explicit empty object (`{}`) rather
+than omitting the key — a reading fully consistent with the prompt's "optional"
+wording — `board_update` is `{}`, which is not `None`, so `validated_update`
+(also `{}`) is kept. `main.py:74`'s check then passes `{}` to
+`db.replace_board_state`, whose `validate_board_state` immediately raises
+`"Board columns must be a list."` (`db.py:188-189`) because `{}.get("columns")`
+is `None`. The user sees a 400 "AI board update was invalid" for a turn where
+the AI never intended to touch the board.
+
+**Fix**: treat an empty/all-`None` `board_update` the same as an absent one —
+e.g. have `validate_ai_board_update` return `None` instead of `{}` when both
+`columns` and `cards` are absent, and check truthiness rather than `is not
+None` in `main.py`.
+
+### 4. Blocking OpenRouter call stalls the whole async event loop
+
+**`backend/app/ai.py:46-66`**, called from **`backend/app/main.py:38`** and **`main.py:62`**
+
+`call_openrouter` uses `urllib_request.urlopen(request, timeout=30)` — a
+synchronous, blocking network call — invoked directly inside `async def`
+route handlers with no `run_in_threadpool`/executor offload.
+
+**Failure scenario**: while one request is waiting on OpenRouter (up to 30s on
+a slow/unresponsive upstream), the single-process event loop cannot service
+any other request — `GET /api/health`, `GET /api/board`, or another user's
+`PUT /api/board` all queue behind it. Not caught by existing tests since they
+monkeypatch `ai.call_openrouter` with an instant fake.
+
+### 5. A failed board save is silently discarded with no retry
+
+**`frontend/src/components/KanbanBoard.tsx:88-117`** (`flushSave`)
+
+```ts
+const boardToSave = pendingBoardRef.current;
+...
+isSavingRef.current = true;
+pendingBoardRef.current = null;     // cleared before the request is attempted
+try {
+  const response = await fetch(...);
+  ...
+} catch {
+  setError("Unable to save the board to the server.");   // no restore, no retry
+} finally {
+  isSavingRef.current = false;
+  if (pendingBoardRef.current !== null) { void flushSave(); }
+}
+```
+
+**Failure scenario**: a transient network blip or a 5xx during `PUT
+/api/board` fails the fetch; the `catch` only sets an error string.
+`pendingBoardRef.current` was already nulled before the attempt, so the
+`finally` block's re-drain check does nothing. The edit is lost until the user
+happens to make another change — a page refresh in between silently reverts
+to the last successfully-saved board with only a transient error banner as a
+clue.
+
+### 6. Card titles can be empty/whitespace-only, unlike column titles
+
+**`backend/app/db.py:205-206` vs `db.py:225`**
+
+Column titles are validated as non-empty after stripping:
+```python
+if not isinstance(column["title"], str) or not column["title"].strip():
+    raise ValueError("Board column titles must be non-empty strings.")
+```
+Card titles only check the type:
+```python
+if not isinstance(card.get("title"), str):
+    raise ValueError(f"Board card title must be a string: {card_id}")
+```
+
+**Failure scenario**: `PUT /api/board` (or an AI `board_update`) with a card
+titled `""` or `"   "` passes validation and persists, rendering as a
+blank/unlabeled card with no way to distinguish it from a broken UI state —
+an invariant enforced for columns but not for cards on the same wire format.
+
+### 7. `get_or_create_user_board` has a check-then-insert race
+
+**`backend/app/db.py:105-141`**
+
+The function does `SELECT ... FROM boards WHERE user_id = ?`, and only if
+that returns nothing does it `INSERT` a new board plus default columns/cards.
+There's no unique constraint on `boards.user_id` and no locking between the
+SELECT and INSERT.
+
+**Failure scenario**: two near-simultaneous first-access requests for the same
+not-yet-provisioned user (e.g. `GET /api/board` and `POST /api/ai/board`
+firing close together on initial page load) can both see no existing board
+and both insert one. `ORDER BY id ASC LIMIT 1` means only the first board is
+ever used afterward; the second board's columns/cards become permanently
+orphaned rows with no cleanup path. Low likelihood given the single hardcoded
+MVP user, but the mechanism is real and untested.
+
+### 8. `-empty` column-suffix handling is duplicated instead of shared (cleanup)
+
+**`frontend/src/components/KanbanBoard.tsx:171`** vs **`frontend/src/lib/kanban.ts:74-85`**
+
+```ts
+// KanbanBoard.tsx
+const overColumnId = rawOverId.replace(/-empty$/, "");
+```
+duplicates the same regex already encapsulated (but not exported) as
+`normalizeColumnId`/`findColumnId` in `kanban.ts`, which `moveCard` already
+applies internally to `overId`. Independently flagged by three separate
+review angles (reuse, simplification, altitude) — a strong consensus signal.
+
+**Cost**: the drop-target id convention now lives in two files. If the
+empty-column placeholder scheme ever changes (different suffix, different
+marker), a maintainer has to remember to update both `kanban.ts` and
+`KanbanBoard.tsx`; missing one silently breaks dropping cards onto empty
+columns. Fix: export the normalization/resolution helper from `kanban.ts` and
+have `KanbanBoard.tsx` call it instead of re-implementing the regex.
+
 ## Architecture Overview
 
 The project follows a clean monorepo design: Python FastAPI backend serving a statically-exported Next.js frontend from a single Docker container. The separation of concerns is well-structured — `main.py` handles routing, `db.py` handles persistence, `ai.py` handles OpenRouter integration, and the frontend owns all UI logic.
