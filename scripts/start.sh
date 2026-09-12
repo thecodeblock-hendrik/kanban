@@ -17,7 +17,9 @@ if [[ -f "$ROOT_DIR/.env" ]]; then
   EXTRA_ARGS+=(--env-file "$ROOT_DIR/.env")
 fi
 
+mkdir -p "$ROOT_DIR/data"
+
 docker build -t "$IMAGE_NAME" .
-docker run --rm -d --name "$CONTAINER_NAME" -p 8000:8000 "${EXTRA_ARGS[@]}" "$IMAGE_NAME"
+docker run --rm -d --name "$CONTAINER_NAME" -p 8000:8000 -v "$ROOT_DIR/data:/app/data" "${EXTRA_ARGS[@]}" "$IMAGE_NAME"
 
 echo "Application started at http://localhost:8000"
