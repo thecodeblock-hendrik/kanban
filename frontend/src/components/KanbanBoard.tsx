@@ -11,6 +11,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
+import { Send, Sparkles } from "lucide-react";
 import { KanbanColumn } from "@/components/KanbanColumn";
 import { KanbanCardPreview } from "@/components/KanbanCardPreview";
 import { createId, initialData, moveCard, type BoardData } from "@/lib/kanban";
@@ -276,52 +277,40 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
       <div className="pointer-events-none absolute left-0 top-0 h-[420px] w-[420px] -translate-x-1/3 -translate-y-1/3 rounded-full bg-[radial-gradient(circle,_rgba(32,157,215,0.25)_0%,_rgba(32,157,215,0.05)_55%,_transparent_70%)]" />
       <div className="pointer-events-none absolute bottom-0 right-0 h-[520px] w-[520px] translate-x-1/4 translate-y-1/4 rounded-full bg-[radial-gradient(circle,_rgba(117,57,145,0.18)_0%,_rgba(117,57,145,0.05)_55%,_transparent_75%)]" />
 
-      <main className="relative mx-auto flex min-h-screen max-w-[1500px] flex-col gap-10 px-6 pb-16 pt-12">
-        <header className="flex flex-col gap-6 rounded-[32px] border border-[var(--stroke)] bg-white/80 p-8 shadow-[var(--shadow)] backdrop-blur">
-          <div className="flex flex-wrap items-start justify-between gap-6">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
-                Single Board Kanban
-              </p>
-              <h1 className="mt-3 font-display text-4xl font-semibold text-[var(--navy-dark)]">
-                Kanban Studio
-              </h1>
-              <p className="mt-3 max-w-xl text-sm leading-6 text-[var(--gray-text)]">
-                Keep momentum visible. Rename columns, drag cards between stages,
-                and capture quick notes without getting buried in settings.
-              </p>
-            </div>
-            <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--surface)] px-5 py-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-[var(--gray-text)]">
-                Focus
-              </p>
-              <p className="mt-2 text-lg font-semibold text-[var(--primary-blue)]">
-                One board. Five columns. Zero clutter.
-              </p>
-            </div>
+      <main className="relative mx-auto flex min-h-screen w-full max-w-[2000px] flex-col gap-6 px-6 pb-10 pt-8">
+        <header className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[var(--stroke)] bg-white/80 px-6 py-4 shadow-[var(--shadow)] backdrop-blur">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
+              Single Board Kanban
+            </p>
+            <h1 className="mt-1 font-display text-2xl font-semibold text-[var(--navy-dark)]">
+              Kanban Studio
+            </h1>
           </div>
-          {error ? <p className="text-sm font-medium text-red-600">{error}</p> : null}
-          <div className="flex flex-wrap items-center gap-4">
-            {board.columns.map((column) => (
-              <div
-                key={column.id}
-                className="flex items-center gap-2 rounded-full border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)]"
-              >
-                <span className="h-2 w-2 rounded-full bg-[var(--accent-yellow)]" />
-                {column.title}
-              </div>
-            ))}
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
+            <span className="rounded-full bg-[var(--surface)] px-3 py-1.5">
+              {board.columns.length} columns
+            </span>
+            <span className="rounded-full bg-[var(--surface)] px-3 py-1.5">
+              {Object.keys(board.cards).length} cards
+            </span>
           </div>
         </header>
 
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+        {error ? (
+          <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-medium text-red-600">
+            {error}
+          </p>
+        ) : null}
+
+        <div className="grid flex-1 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
           <DndContext
             sensors={sensors}
             collisionDetection={pointerWithin}
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
           >
-            <section className="grid gap-6 lg:grid-cols-5">
+            <section className="grid min-w-0 gap-4 [grid-template-columns:repeat(auto-fit,minmax(230px,1fr))]">
               {board.columns.map((column) => (
                 <KanbanColumn
                   key={column.id}
@@ -342,9 +331,10 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
             </DragOverlay>
           </DndContext>
 
-          <aside className="rounded-[28px] border border-[var(--stroke)] bg-white/80 p-5 shadow-[var(--shadow)] backdrop-blur">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="font-display text-2xl font-semibold text-[var(--navy-dark)]">
+          <aside className="flex min-h-0 flex-col rounded-2xl border border-[var(--stroke)] bg-white/80 p-4 shadow-[var(--shadow)] backdrop-blur xl:max-h-[calc(100vh-160px)]">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="flex items-center gap-2 font-display text-lg font-semibold text-[var(--navy-dark)]">
+                <Sparkles size={16} className="text-[var(--secondary-purple)]" />
                 AI assistant
               </h2>
               <span className="rounded-full bg-[var(--surface)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
@@ -352,7 +342,7 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
               </span>
             </div>
 
-            <div className="flex max-h-[540px] flex-col gap-3 overflow-y-auto pr-1">
+            <div className="flex flex-1 flex-col gap-3 overflow-y-auto pr-1">
               {chatMessages.map((message, index) => (
                 <div
                   key={`${message.role}-${index}`}
@@ -372,24 +362,31 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
               ) : null}
             </div>
 
-            <div className="mt-5 space-y-3">
-              <label htmlFor="ai-prompt" className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
+            <div className="mt-4 space-y-2">
+              <label htmlFor="ai-prompt" className="sr-only">
                 Ask the AI
               </label>
               <textarea
                 id="ai-prompt"
                 value={aiInput}
                 onChange={(event) => setAiInput(event.target.value)}
-                rows={4}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void handleAiSubmit();
+                  }
+                }}
+                rows={3}
                 placeholder="Ask the AI to rename a column or update the board..."
-                className="w-full resize-none rounded-2xl border border-[var(--stroke)] bg-[var(--surface)] px-3 py-3 text-sm text-[var(--navy-dark)] outline-none transition focus:border-[var(--primary-blue)]"
+                className="w-full resize-none rounded-xl border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--navy-dark)] outline-none transition focus:border-[var(--primary-blue)]"
               />
               <button
                 type="button"
                 onClick={handleAiSubmit}
                 disabled={isAiLoading || !aiInput.trim()}
-                className="w-full rounded-xl bg-[var(--secondary-purple)] px-4 py-3 text-sm font-semibold text-white transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--secondary-purple)] px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
               >
+                <Send size={15} strokeWidth={2.5} />
                 Send
               </button>
             </div>

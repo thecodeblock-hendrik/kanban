@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { LogOut } from "lucide-react";
 import { KanbanBoard } from "@/components/KanbanBoard";
 
 const VALID_USERNAME = "user";
@@ -95,8 +96,9 @@ export default function Home() {
         <button
           type="button"
           onClick={handleLogout}
-          className="rounded-full border border-[var(--stroke)] bg-white px-4 py-2 text-sm font-semibold text-[var(--navy-dark)] shadow-sm transition hover:border-[var(--primary-blue)]"
+          className="flex items-center gap-2 rounded-full border border-[var(--stroke)] bg-white px-4 py-2 text-sm font-semibold text-[var(--navy-dark)] shadow-sm transition hover:border-[var(--primary-blue)]"
         >
+          <LogOut size={15} strokeWidth={2.5} />
           Log out
         </button>
       </header>
