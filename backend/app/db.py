@@ -1,11 +1,18 @@
 """SQLite persistence for the Kanban board."""
 
+import hashlib
+import hmac
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
+
+PBKDF2_ITERATIONS = 100_000
+DEFAULT_SEED_USERNAME = "user"
+DEFAULT_SEED_PASSWORD = "password"
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_DIR = BASE_DIR / "data"
@@ -31,6 +38,18 @@ DEFAULT_CARDS = {
 }
 
 
+def hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
+    if salt is None:
+        salt = os.urandom(16).hex()
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), PBKDF2_ITERATIONS)
+    return digest.hex(), salt
+
+
+def verify_password(password: str, password_hash: str, salt: str) -> bool:
+    candidate, _ = hash_password(password, salt)
+    return hmac.compare_digest(candidate, password_hash)
+
+
 @contextmanager
 def get_connection():
     connection = sqlite3.connect(DB_PATH)
@@ -54,10 +73,16 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
+                salt TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        existing_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(users)").fetchall()
+        }
+        if "salt" not in existing_columns:
+            connection.execute("ALTER TABLE users ADD COLUMN salt TEXT NOT NULL DEFAULT ''")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS boards (
@@ -95,50 +120,170 @@ def init_db() -> None:
             )
             """
         )
+        seed_password_hash, seed_salt = hash_password(DEFAULT_SEED_PASSWORD)
         connection.execute(
-            "INSERT OR IGNORE INTO users (username, password_hash) VALUES (?, ?)",
-            ("user", "password"),
+            "INSERT OR IGNORE INTO users (username, password_hash, salt) VALUES (?, ?, ?)",
+            (DEFAULT_SEED_USERNAME, seed_password_hash, seed_salt),
         )
+        seed_user = connection.execute(
+            "SELECT id, salt FROM users WHERE username = ?",
+            (DEFAULT_SEED_USERNAME,),
+        ).fetchone()
+        if seed_user is not None and not seed_user["salt"]:
+            connection.execute(
+                "UPDATE users SET password_hash = ?, salt = ? WHERE id = ?",
+                (seed_password_hash, seed_salt, seed_user["id"]),
+            )
         connection.commit()
 
 
-def get_or_create_user_board(username: str) -> tuple[int, int]:
+def create_user(username: str, password: str) -> int:
+    username = username.strip()
+    if not username:
+        raise ValueError("Username must not be empty.")
+    if not password or len(password) < 4:
+        raise ValueError("Password must be at least 4 characters.")
+
+    password_hash, salt = hash_password(password)
+    with get_connection() as connection:
+        existing = connection.execute(
+            "SELECT id FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if existing is not None:
+            raise ValueError(f"Username already exists: {username}")
+
+        cursor = connection.execute(
+            "INSERT INTO users (username, password_hash, salt) VALUES (?, ?, ?)",
+            (username, password_hash, salt),
+        )
+        connection.commit()
+        return cursor.lastrowid
+
+
+def authenticate_user(username: str, password: str) -> int:
+    with get_connection() as connection:
+        user = connection.execute(
+            "SELECT id, password_hash, salt FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+
+    if user is None or not verify_password(password, user["password_hash"], user["salt"]):
+        raise ValueError("Invalid username or password.")
+
+    return user["id"]
+
+
+def get_user_id(username: str) -> int:
     with get_connection() as connection:
         user = connection.execute(
             "SELECT id FROM users WHERE username = ?",
             (username,),
         ).fetchone()
-        if user is None:
-            raise HTTPException(status_code=404, detail="User not found")
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user["id"]
 
+
+def _seed_default_board(connection: sqlite3.Connection, user_id: int, name: str) -> int:
+    cursor = connection.execute(
+        "INSERT INTO boards (user_id, name) VALUES (?, ?)",
+        (user_id, name),
+    )
+    board_id = cursor.lastrowid
+
+    for index, column in enumerate(DEFAULT_COLUMNS):
+        connection.execute(
+            "INSERT INTO board_columns (id, board_id, title, position) VALUES (?, ?, ?, ?)",
+            (f"{column['id']}-{board_id}", board_id, column["title"], index),
+        )
+        for card_index, card_id in enumerate(column["cardIds"]):
+            card = DEFAULT_CARDS[card_id]
+            connection.execute(
+                "INSERT INTO board_cards (id, board_id, column_id, title, details, position) VALUES (?, ?, ?, ?, ?, ?)",
+                (f"{card['id']}-{board_id}", board_id, f"{column['id']}-{board_id}", card["title"], card["details"], card_index),
+            )
+
+    return board_id
+
+
+def list_boards(user_id: int) -> list[dict[str, Any]]:
+    with get_connection() as connection:
+        boards = connection.execute(
+            "SELECT id, name, created_at, updated_at FROM boards WHERE user_id = ? ORDER BY id ASC",
+            (user_id,),
+        ).fetchall()
+    return [dict(board) for board in boards]
+
+
+def create_board(user_id: int, name: str) -> dict[str, Any]:
+    name = name.strip()
+    if not name:
+        raise ValueError("Board name must not be empty.")
+
+    with get_connection() as connection:
+        board_id = _seed_default_board(connection, user_id, name)
+        connection.commit()
+        board = connection.execute(
+            "SELECT id, name, created_at, updated_at FROM boards WHERE id = ?",
+            (board_id,),
+        ).fetchone()
+    return dict(board)
+
+
+def get_or_create_user_board(username: str) -> tuple[int, int]:
+    """Return (user_id, board_id), creating the user's first board if none exists."""
+    user_id = get_user_id(username)
+    with get_connection() as connection:
         board = connection.execute(
             "SELECT id FROM boards WHERE user_id = ? ORDER BY id ASC LIMIT 1",
-            (user["id"],),
+            (user_id,),
         ).fetchone()
-
         if board is not None:
-            return user["id"], board["id"]
+            return user_id, board["id"]
 
-        cursor = connection.execute(
-            "INSERT INTO boards (user_id, name) VALUES (?, ?)",
-            (user["id"], "Project Board"),
-        )
-        board_id = cursor.lastrowid
-
-        for index, column in enumerate(DEFAULT_COLUMNS):
-            connection.execute(
-                "INSERT INTO board_columns (id, board_id, title, position) VALUES (?, ?, ?, ?)",
-                (column["id"], board_id, column["title"], index),
-            )
-            for card_index, card_id in enumerate(column["cardIds"]):
-                card = DEFAULT_CARDS[card_id]
-                connection.execute(
-                    "INSERT INTO board_cards (id, board_id, column_id, title, details, position) VALUES (?, ?, ?, ?, ?, ?)",
-                    (card["id"], board_id, column["id"], card["title"], card["details"], card_index),
-                )
-
+        board_id = _seed_default_board(connection, user_id, "Project Board")
         connection.commit()
-        return user["id"], board_id
+        return user_id, board_id
+
+
+def get_board_owned(board_id: int, user_id: int) -> dict[str, Any]:
+    with get_connection() as connection:
+        board = connection.execute(
+            "SELECT id, user_id, name, created_at, updated_at FROM boards WHERE id = ?",
+            (board_id,),
+        ).fetchone()
+    if board is None or board["user_id"] != user_id:
+        raise HTTPException(status_code=404, detail="Board not found")
+    return dict(board)
+
+
+def rename_board(board_id: int, user_id: int, name: str) -> dict[str, Any]:
+    name = name.strip()
+    if not name:
+        raise ValueError("Board name must not be empty.")
+
+    get_board_owned(board_id, user_id)
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE boards SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (name, board_id),
+        )
+        connection.commit()
+        board = connection.execute(
+            "SELECT id, name, created_at, updated_at FROM boards WHERE id = ?",
+            (board_id,),
+        ).fetchone()
+    return dict(board)
+
+
+def delete_board(board_id: int, user_id: int) -> None:
+    get_board_owned(board_id, user_id)
+    with get_connection() as connection:
+        connection.execute("DELETE FROM board_cards WHERE board_id = ?", (board_id,))
+        connection.execute("DELETE FROM board_columns WHERE board_id = ?", (board_id,))
+        connection.execute("DELETE FROM boards WHERE id = ?", (board_id,))
+        connection.commit()
 
 
 def serialize_board(board_id: int) -> dict[str, Any]:
@@ -237,9 +382,9 @@ def validate_board_state(board_state: Any) -> tuple[list[dict[str, Any]], dict[s
     return columns, cards
 
 
-def replace_board_state(username: str, board_state: dict[str, Any]) -> dict[str, Any]:
+def replace_board_state(board_id: int, user_id: int, board_state: dict[str, Any]) -> dict[str, Any]:
     columns, cards = validate_board_state(board_state)
-    _, board_id = get_or_create_user_board(username)
+    get_board_owned(board_id, user_id)
 
     with get_connection() as connection:
         connection.execute("DELETE FROM board_cards WHERE board_id = ?", (board_id,))

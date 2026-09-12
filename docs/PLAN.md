@@ -286,3 +286,73 @@ Before closing the project, verify the following:
 - [ ] The user can interact with the app through the final UI without developer-only workarounds
 
 This sequence maintains the required design approval gates, keeps the MVP simple, and minimizes risk by validating each major implementation layer before adding the next one.
+
+---
+
+## Post-MVP expansion (approved by user on 2026-09-12)
+
+The MVP above is single-user and single-board. The user has explicitly approved expanding scope beyond the MVP to a multi-user, multi-board project management application. This section gates that expanded work the same way Parts 1-10 gated the MVP.
+
+## Part 11: Real user accounts
+
+### Objective
+Replace the single hardcoded `user`/`password` login with real, database-backed user accounts so multiple people can each have their own login.
+
+### Checklist
+- [x] Add password hashing (salted, e.g. PBKDF2) to the `users` table instead of storing plaintext
+- [x] Add `POST /api/auth/register` to create a new account (unique username, minimum password rules)
+- [x] Add `POST /api/auth/login` to verify credentials against stored hashes
+- [x] Migrate any existing local database so the seeded `user`/`password` account still logs in after the hashing change
+- [x] Update the frontend sign-in screen to call the real auth endpoints instead of checking a hardcoded constant
+- [x] Add a registration screen/flow reachable from sign-in
+- [x] Add backend tests for register/login success and failure paths (duplicate username, wrong password, missing fields)
+
+### Tests
+- Registering a new user persists a hashed (never plaintext) password
+- Logging in with correct credentials succeeds; incorrect credentials fail with a clear error
+- Duplicate username registration is rejected
+- Existing seeded `user`/`password` account keeps working after migration
+
+### Success criteria
+- [x] Any number of real accounts can register and log in
+- [x] No plaintext passwords are stored
+- [x] Existing MVP login flow keeps working for the default account
+
+---
+
+## Part 12: Multiple boards per user
+
+### Objective
+Let each user own multiple named Kanban boards instead of exactly one, with a way to switch between them.
+
+### Checklist
+- [x] Add board-scoped API routes: list a user's boards, create a board, rename a board, delete a board, get/update one board's state by id
+- [x] Enforce board ownership (a user can only read/write their own boards) in every board route
+- [x] Add a board switcher UI (list boards, create new, rename, delete, select active board)
+- [x] Update the AI chat endpoint to operate on the currently selected board id
+- [x] Update `docs/DATABASE.md` if the schema or ownership rules change
+- [x] Add backend tests for board CRUD and ownership enforcement (user A cannot read/write user B's board)
+- [x] Add frontend tests for switching boards and creating/deleting boards
+
+### Tests
+- A new user has zero boards until they create one (or a default board is created on first login)
+- Creating a board makes it appear in that user's board list only
+- Renaming and deleting a board persists and does not affect other boards
+- A user cannot fetch, update, or delete another user's board (403/404)
+- Switching boards in the UI loads the correct board's columns and cards
+
+### Success criteria
+- [x] Users can create, rename, delete, and switch between multiple boards
+- [x] Board data never leaks across users or boards
+- [x] The AI chat sidebar operates on the correct, currently-selected board
+
+---
+
+## Final verification checklist (post-MVP)
+
+- [x] Multiple real user accounts can register, log in, and log out independently
+- [x] Each user can create, rename, delete, and switch between multiple boards
+- [x] Board and card data is fully isolated per user and per board
+- [x] All new backend routes have unit test coverage, including ownership/negative cases
+- [x] Frontend integration/e2e tests cover registration, login, board switching, and board CRUD
+- [x] `docs/DATABASE.md` and `CLAUDE.md` are updated to describe the new schema and auth flow

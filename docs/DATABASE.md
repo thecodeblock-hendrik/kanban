@@ -14,16 +14,19 @@ This project uses SQLite as the local persistence layer for the MVP. SQLite is a
 ## Tables
 
 ### users
-Stores user identities for future multi-user support.
+Stores real, independently registered user identities.
 
 Fields:
 - id
 - username
-- password_hash
+- password_hash (salted PBKDF2-HMAC-SHA256, hex-encoded)
+- salt (random 16-byte hex string, unique per user)
 - created_at
 
+Passwords are never stored in plaintext. `db.hash_password()`/`db.verify_password()` handle hashing and verification; `db.create_user()` and `db.authenticate_user()` back the `/api/auth/register` and `/api/auth/login` routes.
+
 ### boards
-Stores a user's project board(s).
+Stores each user's project board(s). A user can own any number of boards.
 
 Fields:
 - id
@@ -32,7 +35,7 @@ Fields:
 - created_at
 - updated_at
 
-For the MVP, each signed-in user will have one board, but the schema supports multiple boards if needed later.
+Every board route (`GET/POST /api/boards`, `PATCH/DELETE /api/boards/{id}`, `GET/PUT /api/board`, `POST /api/ai/board`) enforces ownership via `db.get_board_owned()`: a board only ever resolves for the user that owns it, returning 404 otherwise.
 
 ### board_columns
 Stores the board's columns and their order.
@@ -85,4 +88,4 @@ This approach keeps the schema understandable and easy to test:
 
 ## MVP status
 
-This schema is a design proposal for Part 5 and is the point of sign-off before Part 6 begins. The backend will not be built against a different schema after approval.
+This schema was the point of sign-off before Part 6 (backend persistence) began, and it held unchanged through the MVP (Parts 1-10): the `users` and `boards` tables were designed to support multiple users and multiple boards per user from the start, so no migration was needed when that scope was approved for Part 11/12 (see `docs/PLAN.md`) beyond adding a `salt` column to `users` for password hashing.

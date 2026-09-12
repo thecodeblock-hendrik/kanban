@@ -13,6 +13,10 @@ from fastapi.staticfiles import StaticFiles
 
 from . import ai, db
 
+
+def _require_user_id(username: str) -> int:
+    return db.get_user_id(username)
+
 BASE_DIR = Path(__file__).resolve().parents[2]
 FRONTEND_BUILD_DIR = BASE_DIR / "frontend" / "out"
 
@@ -41,8 +45,93 @@ async def test_ai(prompt: str = Query("2 + 2", min_length=1)) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.post("/api/auth/register")
+async def register(body: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Registration payload must be a JSON object.")
+
+    username = body.get("username")
+    password = body.get("password")
+    if not isinstance(username, str) or not isinstance(password, str):
+        raise HTTPException(status_code=400, detail="Registration requires username and password strings.")
+
+    try:
+        user_id = db.create_user(username, password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"user": {"id": user_id, "username": username.strip()}}
+
+
+@app.post("/api/auth/login")
+async def login(body: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Login payload must be a JSON object.")
+
+    username = body.get("username")
+    password = body.get("password")
+    if not isinstance(username, str) or not isinstance(password, str):
+        raise HTTPException(status_code=400, detail="Login requires username and password strings.")
+
+    try:
+        user_id = db.authenticate_user(username, password)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    return {"user": {"id": user_id, "username": username}}
+
+
+@app.get("/api/boards")
+async def list_boards(user: str = Query(..., min_length=1)) -> dict[str, Any]:
+    user_id = _require_user_id(user)
+    boards = db.list_boards(user_id)
+    if not boards:
+        _, board_id = db.get_or_create_user_board(user)
+        boards = db.list_boards(user_id)
+    return {"boards": boards}
+
+
+@app.post("/api/boards")
+async def create_board(body: dict[str, Any], user: str = Query(..., min_length=1)) -> dict[str, Any]:
+    user_id = _require_user_id(user)
+    name = body.get("name") if isinstance(body, dict) else None
+    if not isinstance(name, str):
+        raise HTTPException(status_code=400, detail="Board name must be a string.")
+
+    try:
+        board = db.create_board(user_id, name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"board": board}
+
+
+@app.patch("/api/boards/{board_id}")
+async def update_board_name(board_id: int, body: dict[str, Any], user: str = Query(..., min_length=1)) -> dict[str, Any]:
+    user_id = _require_user_id(user)
+    name = body.get("name") if isinstance(body, dict) else None
+    if not isinstance(name, str):
+        raise HTTPException(status_code=400, detail="Board name must be a string.")
+
+    try:
+        board = db.rename_board(board_id, user_id, name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"board": board}
+
+
+@app.delete("/api/boards/{board_id}")
+async def remove_board(board_id: int, user: str = Query(..., min_length=1)) -> dict[str, Any]:
+    user_id = _require_user_id(user)
+    db.delete_board(board_id, user_id)
+    return {"ok": True}
+
+
 @app.post("/api/ai/board")
-async def ai_board(body: dict[str, Any], user: str = Query(..., min_length=1)) -> dict[str, Any]:
+async def ai_board(
+    body: dict[str, Any],
+    user: str = Query(..., min_length=1),
+    board_id: int = Query(..., alias="boardId"),
+) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="AI request payload must be a JSON object.")
 
@@ -54,7 +143,8 @@ async def ai_board(body: dict[str, Any], user: str = Query(..., min_length=1)) -
     if not isinstance(history, list):
         raise HTTPException(status_code=400, detail="AI request history must be a list when provided.")
 
-    _, board_id = db.get_or_create_user_board(user)
+    user_id = _require_user_id(user)
+    db.get_board_owned(board_id, user_id)
     board_state = db.serialize_board(board_id)
     model_prompt = ai.build_board_prompt(prompt, history, board_state)
 
@@ -73,7 +163,7 @@ async def ai_board(body: dict[str, Any], user: str = Query(..., min_length=1)) -
 
     if parsed.get("board_update") is not None:
         try:
-            payload["board"] = db.replace_board_state(user, parsed["board_update"])
+            payload["board"] = db.replace_board_state(board_id, user_id, parsed["board_update"])
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"AI board update was invalid: {exc}") from exc
     else:
@@ -83,21 +173,33 @@ async def ai_board(body: dict[str, Any], user: str = Query(..., min_length=1)) -
 
 
 @app.get("/api/board")
-async def get_board(user: str = Query(..., min_length=1)) -> dict[str, Any]:
-    _, board_id = db.get_or_create_user_board(user)
-    return {"user": user, "board": db.serialize_board(board_id)}
+async def get_board(user: str = Query(..., min_length=1), board_id: int | None = Query(None, alias="boardId")) -> dict[str, Any]:
+    user_id = _require_user_id(user)
+    if board_id is None:
+        _, board_id = db.get_or_create_user_board(user)
+    else:
+        db.get_board_owned(board_id, user_id)
+    return {"user": user, "boardId": board_id, "board": db.serialize_board(board_id)}
 
 
 @app.put("/api/board")
-async def update_board(body: dict[str, Any], user: str = Query(..., min_length=1)) -> dict[str, Any]:
+async def update_board(
+    body: dict[str, Any],
+    user: str = Query(..., min_length=1),
+    board_id: int | None = Query(None, alias="boardId"),
+) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Board payload must be a JSON object")
 
+    user_id = _require_user_id(user)
+    if board_id is None:
+        _, board_id = db.get_or_create_user_board(user)
+
     try:
-        board = db.replace_board_state(user, body)
+        board = db.replace_board_state(board_id, user_id, body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"user": user, "board": board}
+    return {"user": user, "boardId": board_id, "board": board}
 
 
 if FRONTEND_BUILD_DIR.exists():

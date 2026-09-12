@@ -112,3 +112,50 @@ test("keeps a column rename after refresh", async ({ page }) => {
   await signIn(page, "Persisted Backlog");
   await expect(page.locator('input[aria-label="Column title"]').first()).toHaveValue("Persisted Backlog");
 });
+
+test("can register a new account and see an isolated board", async ({ page }) => {
+  const username = `pw-user-${Date.now()}`;
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /need an account\? register/i }).click();
+  await page.getByLabel("Username").fill(username);
+  await page.getByLabel("Password").fill("hunter22");
+  await page.getByRole("button", { name: "Create account" }).click();
+
+  await expect(page.getByText(/account created/i)).toBeVisible();
+
+  await page.getByLabel("Username").fill(username);
+  await page.getByLabel("Password").fill("hunter22");
+  await page.getByRole("button", { name: "Sign in" }).click();
+
+  await expect(page.getByRole("heading", { name: "Kanban Studio" })).toBeVisible();
+  await expect(page.locator('input[aria-label="Column title"]').first()).toHaveValue("Backlog");
+  await expect(page.locator('[data-testid^="column-"]')).toHaveCount(5);
+});
+
+test("creates, renames, switches, and deletes a second board", async ({ page }) => {
+  const boardName = `Marketing ${Date.now()}`;
+
+  await page.goto("/");
+  await signIn(page);
+
+  await page.getByRole("button", { name: /new board/i }).click();
+  await page.getByPlaceholder("Board name").fill(boardName);
+  await page.getByPlaceholder("Board name").press("Enter");
+
+  const marketingTab = page.getByRole("button", { name: boardName, exact: true });
+  await expect(marketingTab).toBeVisible();
+  await marketingTab.click();
+
+  await expect(page.locator('input[aria-label="Column title"]').first()).toHaveValue("Backlog");
+
+  const firstColumn = page.locator('[data-testid^="column-"]').first();
+  await firstColumn.getByLabel("Column title").fill("Campaigns");
+  await expect(firstColumn.getByLabel("Column title")).toHaveValue("Campaigns");
+
+  await page.getByRole("button", { name: "Project Board", exact: true }).click();
+  await expect(page.locator('input[aria-label="Column title"]').first()).toHaveValue("Backlog");
+
+  await page.getByLabel(`Delete ${boardName}`).click();
+  await expect(page.getByRole("button", { name: boardName, exact: true })).toHaveCount(0);
+});

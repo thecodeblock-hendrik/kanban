@@ -7,39 +7,143 @@ import { initialData, type BoardData } from "@/lib/kanban";
 
 const getFirstColumn = () => screen.getAllByTestId(/column-/i)[0];
 
-let serverBoard: BoardData;
+type BoardSummary = { id: number; name: string };
+
+let users: Record<string, string>;
+let boardsByUser: Record<string, BoardSummary[]>;
+let boardStates: Record<number, BoardData>;
+let nextBoardId: number;
+
+const jsonResponse = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+
+const ensureDefaultBoard = (user: string): BoardSummary[] => {
+  if (!boardsByUser[user]) {
+    boardsByUser[user] = [];
+  }
+  if (boardsByUser[user].length === 0) {
+    const id = nextBoardId++;
+    boardsByUser[user] = [{ id, name: "Project Board" }];
+    boardStates[id] = structuredClone(initialData);
+  }
+  return boardsByUser[user];
+};
+
+const defaultFetchMock = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = new URL(String(input), "http://localhost");
+  const method = init?.method ?? "GET";
+  const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+
+  if (url.pathname === "/api/auth/login" && method === "POST") {
+    const { username, password } = body as { username: string; password: string };
+    if (users[username] === password) {
+      return jsonResponse({ user: { id: 1, username } });
+    }
+    return jsonResponse({ detail: "Invalid username or password." }, 401);
+  }
+
+  if (url.pathname === "/api/auth/register" && method === "POST") {
+    const { username, password } = body as { username: string; password: string };
+    if (users[username] !== undefined) {
+      return jsonResponse({ detail: "Username already exists." }, 400);
+    }
+    users[username] = password;
+    return jsonResponse({ user: { id: 2, username } });
+  }
+
+  if (url.pathname === "/api/boards" && method === "GET") {
+    const user = url.searchParams.get("user") ?? "user";
+    return jsonResponse({ boards: ensureDefaultBoard(user) });
+  }
+
+  if (url.pathname === "/api/boards" && method === "POST") {
+    const user = url.searchParams.get("user") ?? "user";
+    const { name } = body as { name: string };
+    const id = nextBoardId++;
+    const board = { id, name };
+    boardsByUser[user] = [...ensureDefaultBoard(user), board];
+    boardStates[id] = structuredClone(initialData);
+    return jsonResponse({ board });
+  }
+
+  const boardIdMatch = url.pathname.match(/^\/api\/boards\/(\d+)$/);
+  if (boardIdMatch && method === "PATCH") {
+    const user = url.searchParams.get("user") ?? "user";
+    const id = Number(boardIdMatch[1]);
+    const { name } = body as { name: string };
+    boardsByUser[user] = boardsByUser[user].map((board) =>
+      board.id === id ? { ...board, name } : board
+    );
+    return jsonResponse({ board: { id, name } });
+  }
+  if (boardIdMatch && method === "DELETE") {
+    const user = url.searchParams.get("user") ?? "user";
+    const id = Number(boardIdMatch[1]);
+    boardsByUser[user] = boardsByUser[user].filter((board) => board.id !== id);
+    delete boardStates[id];
+    return jsonResponse({ ok: true });
+  }
+
+  if (url.pathname === "/api/board" && method === "GET") {
+    const boardId = Number(url.searchParams.get("boardId"));
+    return jsonResponse({ user: "user", boardId, board: structuredClone(boardStates[boardId]) });
+  }
+
+  if (url.pathname === "/api/board" && method === "PUT") {
+    const boardId = Number(url.searchParams.get("boardId"));
+    boardStates[boardId] = body as BoardData;
+    return jsonResponse({ user: "user", boardId, board: structuredClone(boardStates[boardId]) });
+  }
+
+  return jsonResponse({ user: "user", board: structuredClone(initialData) });
+};
 
 beforeEach(() => {
-  serverBoard = structuredClone(initialData);
+  users = { user: "password" };
+  boardsByUser = {};
+  boardStates = {};
+  nextBoardId = 1;
   window.localStorage.clear();
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
-    if (init?.method === "PUT") {
-      serverBoard = JSON.parse(String(init.body)) as BoardData;
-    }
-
-    return new Response(JSON.stringify({ user: "user", board: structuredClone(serverBoard) }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  });
+  vi.spyOn(globalThis, "fetch").mockImplementation(defaultFetchMock);
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("KanbanBoard", () => {
-  it("loads the board from the API", async () => {
-    serverBoard.columns[0].title = "API Backlog";
+const noop = () => {};
 
-    render(<KanbanBoard username="user" />);
+const kanbanBoardProps = (overrides: Partial<Parameters<typeof KanbanBoard>[0]> = {}) => ({
+  username: "user",
+  boardId: 1,
+  boards: [{ id: 1, name: "Project Board" }],
+  onSelectBoard: noop,
+  onCreateBoard: noop,
+  onRenameBoard: noop,
+  onDeleteBoard: noop,
+  ...overrides,
+});
+
+describe("KanbanBoard", () => {
+  beforeEach(() => {
+    boardsByUser.user = [{ id: 1, name: "Project Board" }];
+    boardStates[1] = structuredClone(initialData);
+  });
+
+  it("loads the board from the API", async () => {
+    boardStates[1].columns[0].title = "API Backlog";
+
+    render(<KanbanBoard {...kanbanBoardProps()} />);
 
     expect(await screen.findByDisplayValue("API Backlog")).toBeInTheDocument();
-    expect(fetch).toHaveBeenCalledWith("/api/board?user=user");
+    expect(fetch).toHaveBeenCalledWith("/api/board?user=user&boardId=1");
   });
 
   it("saves a board change through the API", async () => {
-    render(<KanbanBoard username="user" />);
+    render(<KanbanBoard {...kanbanBoardProps()} />);
     await screen.findByDisplayValue("Backlog");
     const input = within(getFirstColumn()).getByLabelText("Column title");
 
@@ -47,7 +151,7 @@ describe("KanbanBoard", () => {
     await userEvent.type(input, "Saved Backlog");
 
     await waitFor(() => {
-      expect(serverBoard.columns[0].title).toBe("Saved Backlog");
+      expect(boardStates[1].columns[0].title).toBe("Saved Backlog");
     });
   });
 
@@ -55,7 +159,7 @@ describe("KanbanBoard", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
     fetchMock.mockClear();
 
-    render(<KanbanBoard username="user" />);
+    render(<KanbanBoard {...kanbanBoardProps()} />);
     await screen.findByDisplayValue("Backlog");
 
     const input = within(getFirstColumn()).getByLabelText("Column title");
@@ -69,20 +173,20 @@ describe("KanbanBoard", () => {
           ([url, init]) => String(url).includes("/api/board") && init?.method === "PUT"
         );
         expect(putCalls.length).toBeGreaterThan(0);
-        expect(serverBoard.columns[0].title).toBe("Final draft");
+        expect(boardStates[1].columns[0].title).toBe("Final draft");
       },
       { timeout: 2000 }
     );
   });
 
   it("renders five columns", async () => {
-    render(<KanbanBoard />);
+    render(<KanbanBoard {...kanbanBoardProps()} />);
     await screen.findByDisplayValue("Backlog");
     expect(screen.getAllByTestId(/column-/i)).toHaveLength(5);
   });
 
   it("renames a column", async () => {
-    render(<KanbanBoard />);
+    render(<KanbanBoard {...kanbanBoardProps()} />);
     await screen.findByDisplayValue("Backlog");
     const column = getFirstColumn();
     const input = within(column).getByLabelText("Column title");
@@ -92,7 +196,7 @@ describe("KanbanBoard", () => {
   });
 
   it("adds and removes a card", async () => {
-    render(<KanbanBoard />);
+    render(<KanbanBoard {...kanbanBoardProps()} />);
     await screen.findByDisplayValue("Backlog");
     const column = getFirstColumn();
     const addButton = within(column).getByRole("button", {
@@ -121,14 +225,6 @@ describe("KanbanBoard", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url.includes("/api/board") && init?.method === "PUT") {
-        serverBoard = JSON.parse(String(init.body)) as BoardData;
-        return new Response(JSON.stringify({ user: "user", board: structuredClone(serverBoard) }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-
       if (url.includes("/api/ai/board")) {
         return new Response(
           JSON.stringify({
@@ -141,20 +237,17 @@ describe("KanbanBoard", () => {
                 { id: "col-review", title: "Review", cardIds: ["card-6"] },
                 { id: "col-done", title: "Done", cardIds: ["card-7", "card-8"] },
               ],
-              cards: serverBoard.cards,
+              cards: boardStates[1].cards,
             },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
 
-      return new Response(JSON.stringify({ user: "user", board: structuredClone(serverBoard) }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      return defaultFetchMock(input, init);
     });
 
-    render(<KanbanBoard username="user" />);
+    render(<KanbanBoard {...kanbanBoardProps()} />);
     await screen.findByDisplayValue("Backlog");
 
     await userEvent.type(screen.getByLabelText(/ask the AI/i), "Rename the backlog to Launch Queue.");
@@ -180,7 +273,7 @@ describe("Auth flow", () => {
     await userEvent.type(screen.getByLabelText(/password/i), "password");
     await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
 
-    expect(screen.getByText("Kanban Studio")).toBeInTheDocument();
+    expect(await screen.findByText("Kanban Studio")).toBeInTheDocument();
     expect(screen.getAllByTestId(/column-/i)).toHaveLength(5);
   });
 
@@ -191,7 +284,7 @@ describe("Auth flow", () => {
     await userEvent.type(screen.getByLabelText(/password/i), "wrong");
     await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
 
-    expect(screen.getByText(/invalid username or password/i)).toBeInTheDocument();
+    expect(await screen.findByText(/invalid username or password/i)).toBeInTheDocument();
     expect(screen.queryByText("Kanban Studio")).not.toBeInTheDocument();
   });
 
@@ -201,6 +294,7 @@ describe("Auth flow", () => {
     await userEvent.type(screen.getByLabelText(/username/i), "user");
     await userEvent.type(screen.getByLabelText(/password/i), "password");
     await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
+    await screen.findByText("Kanban Studio");
 
     await userEvent.click(screen.getByRole("button", { name: /log out/i }));
 
@@ -226,12 +320,43 @@ describe("Auth flow", () => {
     await userEvent.type(detailsInput, "Saved state");
     await userEvent.click(within(column).getByRole("button", { name: /add card/i }));
 
+    await waitFor(
+      () => {
+        const boardId = boardsByUser.user[0].id;
+        expect(
+          Object.values(boardStates[boardId]?.cards ?? {}).some(
+            (card) => card.title === "Persisted card"
+          )
+        ).toBe(true);
+      },
+      { timeout: 2000 }
+    );
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
     await userEvent.click(screen.getByRole("button", { name: /log out/i }));
     await userEvent.type(screen.getByLabelText(/username/i), "user");
     await userEvent.type(screen.getByLabelText(/password/i), "password");
     await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
-    await screen.findByDisplayValue("Backlog");
 
-    expect(screen.getByText("Persisted card")).toBeInTheDocument();
+    expect(await screen.findByText("Persisted card")).toBeInTheDocument();
+  });
+
+  it("can register a new account and then log in with it", async () => {
+    render(<Home />);
+
+    await userEvent.click(screen.getByRole("button", { name: /need an account\? register/i }));
+    await userEvent.type(screen.getByLabelText(/username/i), "newuser");
+    await userEvent.type(screen.getByLabelText(/password/i), "hunter22");
+    await userEvent.click(screen.getByRole("button", { name: /create account/i }));
+
+    expect(await screen.findByText(/account created/i)).toBeInTheDocument();
+
+    await userEvent.clear(screen.getByLabelText(/username/i));
+    await userEvent.clear(screen.getByLabelText(/password/i));
+    await userEvent.type(screen.getByLabelText(/username/i), "newuser");
+    await userEvent.type(screen.getByLabelText(/password/i), "hunter22");
+    await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    expect(await screen.findByText("Kanban Studio")).toBeInTheDocument();
   });
 });

@@ -14,10 +14,17 @@ import {
 import { Send, Sparkles } from "lucide-react";
 import { KanbanColumn } from "@/components/KanbanColumn";
 import { KanbanCardPreview } from "@/components/KanbanCardPreview";
+import { BoardSwitcher, type BoardSummary } from "@/components/BoardSwitcher";
 import { createId, initialData, moveCard, type BoardData } from "@/lib/kanban";
 
 type KanbanBoardProps = {
-  username?: string;
+  username: string;
+  boardId: number;
+  boards: BoardSummary[];
+  onSelectBoard: (boardId: number) => void;
+  onCreateBoard: (name: string) => void;
+  onRenameBoard: (boardId: number, name: string) => void;
+  onDeleteBoard: (boardId: number) => void;
 };
 
 type ChatMessage = {
@@ -25,7 +32,15 @@ type ChatMessage = {
   content: string;
 };
 
-export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
+export const KanbanBoard = ({
+  username,
+  boardId,
+  boards,
+  onSelectBoard,
+  onCreateBoard,
+  onRenameBoard,
+  onDeleteBoard,
+}: KanbanBoardProps) => {
   const [board, setBoard] = useState<BoardData>(initialData);
   const [isLoaded, setIsLoaded] = useState(false);
   const [error, setError] = useState("");
@@ -45,7 +60,9 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
 
     const loadBoard = async () => {
       try {
-        const response = await fetch(`/api/board?user=${encodeURIComponent(username)}`);
+        const response = await fetch(
+          `/api/board?user=${encodeURIComponent(username)}&boardId=${boardId}`
+        );
         if (!response.ok) {
           throw new Error("Unable to load the board.");
         }
@@ -70,7 +87,7 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
     return () => {
       isCurrent = false;
     };
-  }, [username]);
+  }, [username, boardId]);
 
   useEffect(() => {
     if (!isLoaded) {
@@ -95,12 +112,15 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
       pendingBoardRef.current = null;
 
       try {
-        const response = await fetch(`/api/board?user=${encodeURIComponent(username)}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(boardToSave),
-          keepalive: true,
-        });
+        const response = await fetch(
+          `/api/board?user=${encodeURIComponent(username)}&boardId=${boardId}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(boardToSave),
+            keepalive: true,
+          }
+        );
 
         if (!response.ok) {
           throw new Error("Unable to save the board.");
@@ -134,7 +154,7 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
         clearTimeout(saveDebounceRef.current);
       }
     };
-  }, [board, isLoaded, username]);
+  }, [board, isLoaded, username, boardId]);
 
   // Flush any unsaved change immediately when the board unmounts (e.g. on
   // logout), instead of losing it to the debounce timer being cleared.
@@ -144,6 +164,18 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
         flushSaveRef.current();
       }
     };
+  }, []);
+
+  // A page navigation/reload kills pending timers without running React's
+  // unmount cleanup, so flush proactively on pagehide too.
+  useEffect(() => {
+    const handlePageHide = () => {
+      if (pendingBoardRef.current !== null) {
+        flushSaveRef.current();
+      }
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
   }, []);
 
   const sensors = useSensors(
@@ -242,14 +274,17 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
     setIsAiLoading(true);
 
     try {
-      const response = await fetch(`/api/ai/board?user=${encodeURIComponent(username)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: trimmedPrompt,
-          history: nextMessages.map(({ role, content }) => ({ role, content })),
-        }),
-      });
+      const response = await fetch(
+        `/api/ai/board?user=${encodeURIComponent(username)}&boardId=${boardId}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: trimmedPrompt,
+            history: nextMessages.map(({ role, content }) => ({ role, content })),
+          }),
+        }
+      );
 
       if (!response.ok) {
         throw new Error("Unable to contact the AI assistant.");
@@ -281,7 +316,7 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
         <header className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[var(--stroke)] bg-white/80 px-6 py-4 shadow-[var(--shadow)] backdrop-blur">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
-              Single Board Kanban
+              Project Management
             </p>
             <h1 className="mt-1 font-display text-2xl font-semibold text-[var(--navy-dark)]">
               Kanban Studio
@@ -296,6 +331,15 @@ export const KanbanBoard = ({ username = "user" }: KanbanBoardProps) => {
             </span>
           </div>
         </header>
+
+        <BoardSwitcher
+          boards={boards}
+          selectedBoardId={boardId}
+          onSelect={onSelectBoard}
+          onCreate={onCreateBoard}
+          onRename={onRenameBoard}
+          onDelete={onDeleteBoard}
+        />
 
         {error ? (
           <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-medium text-red-600">
